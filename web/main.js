@@ -587,16 +587,37 @@ function recurring() {
     }
     return `${head}<section class="panel">${err ? `<div class="empty"><p><strong>Could not load recurring charges</strong></p><p>${esc(err)}</p><p><button class="btn ghost" data-act="retryrec">Retry</button></p></div>` : '<div class="load" role="status">Loading…</div>'}</section>`
   }
-  const on = D.recurring.filter(r => r.active), off = D.recurring.filter(r => !r.active)
-  const row = r => `<div class="arow"><button data-act="recq" data-q="${esc(r.name)}"><span><span class="n">${esc(r.name)}</span>${r.previous != null ? ` <span class="tag">Up from ${usd2(r.previous)}</span>` : ''}<br>
-    <span class="s">${r.cadence[0].toUpperCase() + r.cadence.slice(1)}${r.category ? ` · ${esc(catName(r.category))}` : ''} · ${r.active ? `next around ${dShort(r.next)}` : `last ${dMed(r.last)}`}</span></span>
-    <span class="b">${usd2(r.amount)}</span><span class="ch">${icon('chevR', 16)}</span></button></div>`
+  const R = D.recurring, now = today(), days = d => Math.round((Date.parse(d) - Date.parse(now)) / 864e5)
+  // A cancelled item that billed again goes back to its group, flagged, until it's marked again or cleared.
+  const live = R.filter(r => r.active && (!r.mark || r.charged_after_cancel))
+  const soon = live.filter(r => r.kind !== 'income' && days(r.next) <= 7).sort((a, b) => a.next.localeCompare(b.next))
+  const hidden = R.filter(r => r.mark === 'hidden')
+  const row = r => {
+    const i = R.indexOf(r), d = days(r.next), inc = r.kind === 'income'
+    const tags = [r.new && 'New', r.previous != null && `Up from ${usd2(r.previous)}`, r.cadence === 'yearly' && r.active && !r.mark && d >= 0 && d <= 30 && `Renews in ${d} day${d === 1 ? '' : 's'}`]
+      .filter(Boolean).map(t => ` <span class="tag">${t}</span>`).join('') + (r.charged_after_cancel ? ' <span class="tag warn">Charged after you cancelled</span>' : '')
+    const what = r.kind === 'bill' ? `usually ${usd2(r.typical)}${Math.round(r.high / 100) > Math.round(r.low / 100) ? `, ${usd0(r.low)} to ${usd0(r.high)} over the last year` : ''}` : inc && r.active ? `about ${usd0(r.monthly)} a month` : ''
+    const acts = r.mark && !r.charged_after_cancel ? [['Undo', 'clear']] : [[r.charged_after_cancel ? 'Mark cancelled again' : inc ? 'Mark stopped' : 'Mark cancelled', 'cancelled'], r.charged_after_cancel ? ['Clear', 'clear'] : ['Not recurring', 'hidden']]
+    return `<div class="arow"><button data-act="recq" data-i="${i}"><span><span class="n">${esc(r.name)}</span>${tags}<br>
+    <span class="s">${r.cadence[0].toUpperCase() + r.cadence.slice(1)}${r.category ? ` · ${esc(catName(r.category))}` : ''} · ${r.active && r.mark !== 'cancelled' || r.charged_after_cancel ? `next around ${(r.cadence === 'yearly' ? dMed : dShort)(r.next)}` : `last ${dMed(r.last)}`}${what ? ` · ${what}` : ''}</span></span>
+    <span class="b">${usd2(r.amount)}</span><span class="ch">${icon('chevR', 16)}</span></button>
+    <div class="racts">${acts.map(([l, v]) => `<button class="linkbtn" data-act="recmark" data-i="${i}" data-v="${v}" aria-label="${l}: ${esc(r.name)}">${l}</button>`).join('')}</div></div>`
+  }
+  const total = rs => rs.reduce((s, r) => s + r.monthly, 0)
+  const group = (title, rs, right = '', cap = '') => rs.length ? `<section class="panel acctgroup" style="padding-left:0;padding-right:0"><div class="gh" style="padding-top:0"><h2>${title}</h2><b>${right}</b></div>
+   ${cap ? `<p class="cap" style="padding:0 20px 8px">${cap}</p>` : ''}${rs.map(row).join('')}</section>` : ''
+  const kind = k => live.filter(r => r.kind === k), subs = kind('subscription'), bills = kind('bill'), pay = kind('income')
+  const month = rs => `about ${usd0(total(rs))} a month`
   return `${head}
-  <p class="sub">Found in your transaction history: the same merchant, at a steady interval, for a similar amount. Needs three charges (two for yearly), so short history finds fewer. <a href="#spending">Back to Spending</a></p>
-  <section class="panel acctgroup" style="padding-left:0;padding-right:0"><div class="gh" style="padding-top:0"><h2>Active</h2><b>${on.length ? `about ${usd0(on.reduce((s, r) => s + r.monthly, 0))} a month` : ''}</b></div>
-   ${on.length ? on.map(row).join('') : '<div class="empty">No recurring charges found yet.</div>'}</section>
-  ${off.length ? `<section class="panel acctgroup" style="padding-left:0;padding-right:0"><div class="gh" style="padding-top:0"><h2>Not seen lately</h2></div>
-   <p class="cap" style="padding:0 20px 8px">Overdue by more than half a cycle. Probably cancelled.</p>${off.map(row).join('')}</section>` : ''}`
+  <p class="sub">Found in your transaction history: the same merchant at a steady interval. Subscriptions also need a similar amount each time; bills (housing, utilities, insurance, transportation) can vary. Needs three charges (two for yearly), so short history finds fewer. <a href="#spending">Back to Spending</a></p>
+  ${soon.length ? `<section class="panel acctgroup" style="padding-left:0;padding-right:0"><div class="gh" style="padding-top:0"><h2>Coming up</h2><b>${usd0(soon.reduce((s, r) => s + r.amount, 0))} in the next 7 days</b></div>
+   ${soon.map(r => `<div class="arow"><button data-act="recq" data-i="${R.indexOf(r)}"><span><span class="n">${esc(r.name)}</span><br><span class="s">${days(r.next) <= 0 ? 'Due any day' : `Around ${dShort(r.next)}`}</span></span><span class="b">${usd2(r.amount)}</span><span class="ch">${icon('chevR', 16)}</span></button></div>`).join('')}</section>` : ''}
+  ${live.length ? '' : '<section class="panel"><div class="empty">No recurring charges found yet.</div></section>'}
+  ${group('Subscriptions', subs, month(subs))}${group('Bills', bills, month(bills))}${group('Income', pay, month(pay))}
+  ${group('Not seen lately', R.filter(r => !r.active && !r.mark), '', 'Overdue by more than half a cycle. Probably cancelled.')}
+  ${group('Cancelled', R.filter(r => r.mark === 'cancelled' && !r.charged_after_cancel), '', 'Left out of the totals. If one bills again, it moves back to its group.')}
+  ${hidden.length ? `<p class="need"><button class="linkbtn" data-act="rechidden" aria-expanded="${!!state.recHidden}">${state.recHidden ? 'Hide' : 'Show'} ${hidden.length} marked not recurring</button></p>` : ''}
+  ${state.recHidden ? group('Not recurring', hidden) : ''}`
 }
 
 /* ---------- Investments (#investments): where each investment account's change came from ---------- */
@@ -1136,7 +1157,12 @@ document.addEventListener('click', e => {
   else if (a === 'pickcancel') { state.editing = null; paintTx() }
   else if (a === 'acct') openAccount(d.id)
   else if (a === 'acctTx') { state.f = { ...blankF(), acct: d.id }; go('transactions') }
-  else if (a === 'recq') { state.f = { ...blankF(), q: d.q, flow: 'out' }; go('transactions') }
+  else if (a === 'recq') { const r = D.recurring[+d.i]; state.f = { ...blankF(), q: r.name, flow: r.kind === 'income' ? 'in' : 'out' }; go('transactions') }
+  else if (a === 'recmark') {
+    const r = D.recurring[+d.i], key = encodeURIComponent(d.v === 'clear' ? r.mark_key || r.key : r.key)
+    send(d.v === 'clear' ? 'DELETE' : 'PUT', `/recurring/${key}/mark`, d.v === 'clear' ? undefined : { state: d.v }).then(() => { D.recurring = null }, e => { state.perr.rec = e.message }).finally(render)
+  }
+  else if (a === 'rechidden') { state.recHidden = !state.recHidden; render() }
   else if (a === 'retryrec') { delete state.perr.rec; render() }
   else if (a === 'spendcat') { state.f = { ...blankF(), month: state.month, cat: spendRows[+d.i].raw === '' ? '__none' : spendRows[+d.i].raw }; go('transactions') }
   else if (a === 'sync') doSync()

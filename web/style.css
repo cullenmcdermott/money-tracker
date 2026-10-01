@@ -225,6 +225,10 @@ main{padding:28px 32px 64px;max-width:1360px;width:100%;min-width:0}
 .arow .n{font-weight:500}
 .arow .s{font-size:13px;color:var(--muted)}
 .arow .b{font-weight:500;font-size:16px;text-align:right}
+.racts{display:flex;gap:16px;padding:0 20px 10px;margin-top:-6px;font-size:12px}
+.racts .linkbtn{color:var(--muted);text-decoration:none}
+.racts .linkbtn:hover,.racts .linkbtn:focus-visible{color:var(--accent);text-decoration:underline}
+.tag.warn{color:var(--spend);border-color:currentColor}
 .arow .ch{color:var(--muted);transition:transform .15s}
 .arow.open .ch{transform:rotate(90deg)}
 .adet{padding:0 20px 14px;border-top:1px solid var(--line2);background:var(--panel2)}
@@ -290,7 +294,7 @@ textarea.field{min-height:92px;resize:vertical;font-family:var(--f)}
   .row .a::after{content:" \00b7";}
   .adet .row{grid-template-columns:minmax(0,1fr) auto}
   .srow{padding:11px 14px;gap:8px 10px;grid-template-columns:110px minmax(0,1fr) 68px 44px}
-  .gh,.arow>button{padding-left:14px;padding-right:14px}
+  .gh,.arow>button,.racts{padding-left:14px;padding-right:14px}
   .adet{padding:0 14px 12px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:.01ms!important}}

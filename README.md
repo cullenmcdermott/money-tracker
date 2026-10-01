@@ -5,7 +5,7 @@ A self-hosted personal finance dashboard: one household's checking, credit card,
 ![Overview: a month of income flowing to spending categories and savings](docs/screenshots/overview.jpg)
 
 - **Overview** shows where a month's or year's income went, plus net worth and cash flow for the 12 months ending there.
-- **Spending** compares each category with its six-month average, and **Recurring** finds subscriptions and bills from the charge history.
+- **Spending** compares each category with its six-month average, and **Recurring** finds subscriptions, bills and paychecks from the history: what's coming up this week, what's new or went up, and bills that vary month to month. Mark a charge cancelled (it comes back flagged if it bills again) or not recurring.
 - **Investments** splits each account's growth into what you added, dividends and market change.
 - **Review** suggests categories from your own history and keyword rules. An optional AI fallback ([TypeSafe Jev](https://docs.typesafe.ai)) is off unless you add a key.
 - Transfers between your own accounts are paired and kept out of income and spending. Nightly backups can be restored from the UI.
