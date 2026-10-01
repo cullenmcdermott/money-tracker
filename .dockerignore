@@ -1,0 +1,8 @@
+.git
+.flox
+.env
+data
+bin
+web/node_modules
+web/dist
+.github

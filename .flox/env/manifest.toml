@@ -1,0 +1,12 @@
+schema-version = "1.13.0"
+
+[install]
+go_1_27.pkg-path = "go_1_27"
+nodejs.pkg-path = "nodejs"
+just.pkg-path = "just"
+just.outputs = "all"
+watchexec.pkg-path = "watchexec"
+postgresql.pkg-path = "postgresql_17"
+
+[options]
+systems = ["aarch64-darwin", "aarch64-linux", "x86_64-linux"]

@@ -1,0 +1,156 @@
+# Money Tracker
+
+A self-hosted personal finance dashboard: one household's checking, credit card, investment and loan accounts in one place. Accounts sync through [SimpleFIN Bridge](https://beta-bridge.simplefin.org), everything is stored in your own Postgres, and you sign in with your own OIDC provider. Built to replace Monarch Money for a single household.
+
+![Overview: a month of income flowing to spending categories and savings](docs/screenshots/overview.jpg)
+
+- **Overview** shows where a month's or year's income went, plus net worth and cash flow for the 12 months ending there.
+- **Spending** compares each category with its six-month average, and **Recurring** finds subscriptions and bills from the charge history.
+- **Investments** splits each account's growth into what you added, dividends and market change.
+- **Review** suggests categories from your own history and keyword rules. An optional AI fallback ([TypeSafe Jev](https://docs.typesafe.ai)) is off unless you add a key.
+- Transfers between your own accounts are paired and kept out of income and spending. Nightly backups can be restored from the UI.
+
+| | |
+| --- | --- |
+| ![Spending by category](docs/screenshots/spending.jpg) | ![Recurring charges](docs/screenshots/recurring.jpg) |
+| ![Investments](docs/screenshots/investments.jpg) | ![Review suggestions](docs/screenshots/review.jpg) |
+
+The screenshots use invented data from `scripts/demo_seed.py`.
+
+## Quick start
+
+### Try it locally
+
+You need Go, Node, Postgres 17 and [just](https://just.systems). `flox activate` provides all four.
+
+```sh
+just demo
+```
+
+This starts a local Postgres in `data/pg`, loads SimpleFIN's public demo accounts into a separate `money_demo` database and opens the app at http://localhost:5188 with sign-in turned off. No secrets are needed.
+
+### Run it for real
+
+The image is `ghcr.io/cullenmcdermott/money-tracker` (amd64 and arm64, runs as uid 65532). It needs Postgres, a SimpleFIN access URL and an OIDC client:
+
+```sh
+docker run -p 8080:8080 -v money-data:/data \
+  -e DATABASE_URL='postgres://money:...@db:5432/money' \
+  -e SIMPLEFIN_ACCESS_URL='https://user:pass@beta-bridge.simplefin.org/simplefin' \
+  -e OIDC_ISSUER=https://id.example.com -e OIDC_CLIENT_ID=money-tracker -e OIDC_CLIENT_SECRET=... \
+  -e OIDC_REDIRECT_URL=https://money.example.com/auth/callback -e OIDC_ALLOWED_GROUPS=money \
+  -e SESSION_SECRET=... \
+  ghcr.io/cullenmcdermott/money-tracker:0.1.2
+```
+
+1. Get the access URL by [claiming a SimpleFIN setup token](#simplefin).
+2. Create the OIDC client as described in [Sign-in](#sign-in), and generate `SESSION_SECRET` once with `openssl rand -base64 32`.
+3. Open the app. The first sync runs within the hour, or click **Sync now** in Settings. SimpleFIN returns about 90 days of history; to bring older history from Monarch, see [Importing from Monarch](#importing-from-monarch).
+
+Put a TLS-terminating proxy in front of it. The Kubernetes manifests this app runs on (CNPG Postgres, External Secrets, Traefik) live in the homelab repo.
+
+### Develop
+
+| Command | What it does |
+| --- | --- |
+| `just bootstrap` | First-time setup. It claims your SimpleFIN token, generates `SESSION_SECRET` and collects the OIDC details and an optional Jev key. It stores them as fields of one 1Password item and writes `.env.op` / `.env.op.auth`, which hold only `op://` references. It never prints a secret. |
+| `just dev-op` | Hot-reload dev against your real data, with secrets injected by `op run` and sign-in off. http://localhost:5188 |
+| `just local` | The production build with real sign-in at http://127.0.0.1:8188. Add `http://127.0.0.1:8188/auth/callback` to the OIDC client first. |
+| `just dev` | Plain dev. It reads `SIMPLEFIN_ACCESS_URL` from `.env` if set. |
+| `just test` | `go vet` and the tests, against a throwaway Postgres on port 5434. |
+
+Sign-in can only be turned off (`AUTH_DISABLED=true`) when the server listens on a loopback address and no OIDC issuer is set. Even then it answers only requests addressed to `localhost`.
+
+## SimpleFIN
+
+The app reads one long-lived access URL (`https://user:pass@host/path`) from `SIMPLEFIN_ACCESS_URL`. It is checked at startup, never logged, and never stored in the database, and there is nowhere in the UI to paste it.
+
+1. Create a setup token in your [SimpleFIN Bridge](https://beta-bridge.simplefin.org) account.
+2. Redeem it once and keep the output, because a token can only be claimed once:
+   ```sh
+   pbpaste | just simplefin-claim
+   # or with the image:
+   pbpaste | docker run --rm -i ghcr.io/cullenmcdermott/money-tracker simplefin-claim
+   ```
+   The token is read from stdin, which keeps it out of shell history and `ps`, and only the access URL is printed.
+3. Give it to the app as `SIMPLEFIN_ACCESS_URL`.
+
+The server checks once an hour, at a random minute. It syncs when the last successful sync is more than 23 hours old and no request has gone to SimpleFIN in the past 4 hours. **Sync now** in Settings syncs immediately. Each sync re-reads the last 14 days, so late-posting transactions are picked up.
+
+## Sign-in
+
+The app signs in with OIDC. It was built for [Pocket ID](https://pocket-id.org), but any provider with discovery and PKCE works. It uses the authorization code flow with PKCE, state and nonce. The session is an encrypted cookie valid for 30 days, and nothing is stored server-side. Every route except `/api/health` and `/auth/*` requires a session, including the page itself.
+
+1. In your provider, create an OIDC client with callback URL `<base>/auth/callback`. Optionally add `<base>/auth/signed-out` as the logout callback.
+2. Create a group (e.g. `money`), add the people who should get in, and restrict the client to it.
+3. Set `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (leave it out for a public client), `OIDC_REDIRECT_URL`, `SESSION_SECRET` and `OIDC_ALLOWED_GROUPS=money`.
+
+`OIDC_ALLOWED_EMAILS` also works. Groups are safer, because in some providers users can change their own email. Anyone not allowed gets a 403 page. Rotating `SESSION_SECRET` signs everyone out.
+
+## Smart suggestions (Jev, optional)
+
+Set `JEV_API_KEY` to let Jev answer what your own history and keyword rules can't. It is off by default. Answers are saved per merchant, and those below `JEV_MIN_CONFIDENCE` are shown as low-confidence guesses. Settings shows the token usage and estimated cost.
+
+Requests are batched, up to 20 questions each. Exactly what is sent:
+
+- For merchants with no local suggestion: the display name, up to 3 raw bank descriptions, the typical amount and whether it's income or spending.
+- How often each merchant charges, and `JEV_HOME_LOCATION` if set.
+- Up to 3 merchants you already categorized per category, as examples.
+- For accounts whose type is uncertain: the institution, account name, and whether the balance is positive, negative or zero.
+
+Never sent: balances, amounts for accounts, transaction ids or dates. Errors and timeouts are logged without the key and never break suggestions or sync.
+
+## Backups
+
+Every night at `BACKUP_TIME`, and on demand from Settings, the server writes `BACKUP_DIR/money-YYYYMMDDTHHMMSSZ.tar.gz`. It contains a consistent CSV dump of every table and a manifest with the schema version. Only the newest `BACKUP_KEEP` are kept, and Settings warns if the last good backup is more than 36 hours old.
+
+**Restore** replaces all data. Use Settings → Backups → **Restore** (or **Upload and restore**), or the CLI:
+
+```sh
+money-tracker restore data/backups/money-20260929T030000Z.tar.gz --yes
+```
+
+Before touching anything, a restore checks that the archive is valid and from the same schema version. It then takes a `-pre-restore` safety backup and reloads everything in one transaction, so a failure changes nothing. Backups hold all your financial data, so protect `BACKUP_DIR`.
+
+## Importing from Monarch
+
+Export transactions and balances from Monarch, then:
+
+```sh
+money-tracker import-monarch --transactions Transactions.csv --balances Balances.csv [--dry-run]
+```
+
+- Monarch accounts are matched to SimpleFIN accounts by their last digits, or else by name.
+- Transactions are only imported from before each account's first SimpleFIN transaction.
+- Monarch categories are mapped onto this app's.
+- Re-running updates rows instead of duplicating them, and never overwrites a category you chose since.
+
+## Configuration
+
+| Variable | Default | |
+| --- | --- | --- |
+| `DATABASE_URL` | required | Postgres connection string. Migrations run at startup. |
+| `ADDR` | `:8080` | Listen address. |
+| `SIMPLEFIN_ACCESS_URL` | unset | Without it, nothing syncs. |
+| `OIDC_*`, `SESSION_SECRET` | required | See [Sign-in](#sign-in). |
+| `BACKUP_DIR` | `data/backups` (`/data/backups` in the image) | Must be writable by uid 65532 in the container. |
+| `BACKUP_KEEP` | `14` | |
+| `BACKUP_TIME` | `03:00` | `HH:MM`, server local time. The image has no time zone data, so this is UTC there. |
+| `BACKUP_MAX_UPLOAD` | `1073741824` | Largest restore upload, in bytes. |
+| `JEV_API_KEY` | unset | Turns Jev on. |
+| `JEV_HOME_LOCATION` | unset | For example `Denver, Colorado`. Lets Jev tell trips from local spending. |
+| `JEV_MIN_CONFIDENCE` | `0.5` | |
+| `JEV_MODEL`, `JEV_URL` | `jev-latest`, TypeSafe's endpoint | |
+| `JEV_PRICE_INPUT_PER_MTOK`, `JEV_PRICE_OUTPUT_PER_MTOK` | `0.042`, `0` | Used for the cost estimate in Settings. |
+
+## Releases
+
+CI runs on [Depot CI](https://depot.dev/docs/ci/overview) (`.depot/workflows/ci.yml`). Every PR and push runs vet and the tests. Pushes to `main` and `v*` tags also build the multi-arch image with provenance and SBOM, push it to GHCR and sign the digest with the repo's cosign key:
+
+```sh
+cosign verify --key cosign.pub ghcr.io/cullenmcdermott/money-tracker@sha256:<digest>
+```
+
+Actions are pinned to commit SHAs and base images to digests, so bump them by hand. Deploy by digest.
+
+CI secrets live in Depot, not GitHub: `GHCR_TOKEN`, `COSIGN_PRIVATE_KEY` and `COSIGN_PASSWORD`. To rotate the key, run `cosign generate-key-pair`, store both values with `depot ci secrets add --repo cullenmcdermott/money-tracker`, and commit the new `cosign.pub`.

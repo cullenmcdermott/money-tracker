@@ -1,0 +1,12 @@
+.env
+.env.op
+.env.op.auth
+data/
+bin/
+web/dist/
+web/node_modules/
+.flox/cache
+.flox/run
+.flox/log
+.claude/
+.impeccable/

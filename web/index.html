@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Money Tracker</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <a class="brand" id="brandSide" href="#overview" aria-label="Money Tracker, go to Overview"></a>
+      <nav class="nav" id="navSide" aria-label="Main"></nav>
+      <div class="sidefoot"><button class="iconbtn" data-act="privacy" id="privSide"></button><button class="iconbtn" data-act="theme" id="themeSide"></button></div>
+    </aside>
+    <header class="top">
+      <a class="brand" id="brandTop" href="#overview" aria-label="Money Tracker, go to Overview"></a>
+      <div class="r"><button class="iconbtn" data-act="privacy" id="privTop"></button><button class="iconbtn" data-act="theme" id="themeTop" aria-label="Change theme"></button></div>
+    </header>
+    <main id="main"></main>
+    <nav class="tabs" id="tabs" aria-label="Main"></nav>
+  </div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

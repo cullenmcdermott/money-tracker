@@ -1,0 +1,33 @@
+# Plan
+
+Personal Monarch Money replacement: see income vs expenses per month and net worth across all accounts. Self-hosted, single user.
+
+## Decisions
+
+- **Connectors:** SimpleFIN Bridge is the only connector ($15/yr, covers every institution in use). **Plaid support was dropped entirely (decided 2026-09-29).**
+- **SimpleFIN credential (decided 2026-09-29):** the long-lived access URL comes from the `SIMPLEFIN_ACCESS_URL` environment variable (1Password via external-secrets), not pasted into the app and not stored in the database, so nothing sensitive is stored at rest and the encryption-at-rest layer (`MT_ENCRYPTION_KEY`) was removed. A single `items` row with id `simplefin` carries sync status. Setup tokens are redeemed once with `money-tracker simplefin-claim` (token on stdin, access URL on stdout); the HTTP claim route is gone, so the server never fetches a user-supplied URL.
+- **Stack:** Go stdlib HTTP + Postgres (pgx stdlib driver, no CGO) + Vite vanilla-JS SPA (hand-drawn SVG charts) embedded in one binary. Flox + just for dev.
+- **Database:** Postgres only, via `DATABASE_URL` (SQLite was dropped: no data existed yet, and one dialect keeps SQL idiomatic). Versioned migrations in `migrations/`, tracked in `schema_migrations`. Tests need `TEST_DATABASE_URL`; `just test` starts a throwaway Postgres.
+- **Money:** int64 cents. Transaction amounts positive = money in. Account balances signed: liabilities negative, so net worth = SUM(balance).
+- **Income vs expense** excludes pending transactions and transfers between own accounts (matched pairs only, including credit card payments). Category precedence: manual > rule > remembered merchant category > uncategorized.
+- **Auth:** in-app OIDC against Pocket ID (passkeys; code flow + PKCE, stateless encrypted session cookie, email/group allow-list). Replaces the earlier Authelia-in-front plan. `AUTH_DISABLED=true` is dev-only; the app refuses to start without auth config.
+- **Deploy:** Depot CI (`.depot/workflows/`, moved off GitHub Actions 2026-09-30) → buildx multi-arch image → `ghcr.io/cullenmcdermott/money-tracker`, signed with a repo cosign key (keyless fails: Fulcio rejects Depot's OIDC tokens). Homelab manifests (ArgoCD in `~/git/homelab/k8s`, secrets via external-secrets) come later.
+- **Account types and categories are the app's job (decided 2026-09-29):** SimpleFIN provides neither. Local suggestions first (keyword/history rules; name + balance-sign guess for account types), the user confirms or picks from a dropdown, and Jev is the fallback. User choices are never overwritten by sync.
+
+## Phases
+
+1. **POC (done 2026-09-28)** — both connectors ingest into one schema; transfer matching; dashboard shows connections, accounts, cash flow, net worth. Verified end to end against the SimpleFIN demo bridge. (Plaid was later dropped.)
+   - A. SimpleFIN connector + sync (`simplefin.go`, `main.go`)
+   - B. Transfer matching (`transfers.go`)
+   - C. Dashboard: SimpleFIN connection status (configured via env), accounts (`web/`)
+2. **Categorization (done 2026-09-29)** — rules (payee pattern → category), manual recategorize, review-by-merchant inbox with suggestions and undo, merchants page (rename, merge), new categories. Account types: local guess, user override, "Check type" nudge.
+   - **Jev fallback (done 2026-09-29):** optional TypeSafe Jev (`jev.go`) answers merchants the local sources could not, and non-confident account-type guesses after a sync. Off unless `JEV_API_KEY` is set; retention terms accepted. Only merchant name, up to 3 bank descriptions, typical amount, income/spending (accounts: institution, name, balance sign) are sent. Not verified against the live API.
+3. **Monarch import** — one-time `money-tracker import-monarch` from Monarch's CSV exports: transactions (with Monarch categories as manual categories, seeding merchant categories) and, if the export exists, per-account balance history to backfill net worth. Map Monarch account names to SimpleFIN accounts (mapping file for misses); skip rows already covered by SimpleFIN (same account, date, amount). Needs a sample export to pin the columns. No manual accounts (decided 2026-09-29).
+4. **Ship** — CI + signed image (done), OIDC (done), security hardening (done: CSRF, CSP/headers, generic 5xx, timeouts), homelab manifests (later), Postgres backups (done 2026-09-29: nightly in-process COPY dump to a tar.gz, retention, restore from the Settings UI or `money-tracker restore <file> --yes`).
+5. **Nice to have** — alerts. Budgets: not wanted (decided 2026-09-30).
+   - **Recurring charges (done 2026-09-30):** detected at read time (`recurring.go`, `GET /api/recurring`) per resolved merchant: steady interval (weekly to yearly), amounts within ±30%, 3+ charges (2 for yearly). Shows cadence, next expected date, price increases, monthly total, and "not seen lately". Recurring view is linked from Spending. Merchants sharing a specific bank description are grouped (Monarch-imported rows carry Monarch's merchant names), and a yearly pair must match within 5%.
+
+## Known gaps
+
+- Net worth history starts at the first sync (SimpleFIN provides no past balances) until the Monarch import backfills it.
+- No live Jev call has been made yet; request/response shapes follow the docs only.

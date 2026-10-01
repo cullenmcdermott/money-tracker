@@ -1,0 +1,509 @@
+{
+  "lockfile-version": 1,
+  "manifest": {
+    "schema-version": "1.13.0",
+    "install": {
+      "go_1_27": {
+        "pkg-path": "go_1_27"
+      },
+      "just": {
+        "pkg-path": "just",
+        "outputs": "all"
+      },
+      "nodejs": {
+        "pkg-path": "nodejs"
+      },
+      "postgresql": {
+        "pkg-path": "postgresql_17"
+      },
+      "watchexec": {
+        "pkg-path": "watchexec"
+      }
+    },
+    "options": {
+      "systems": [
+        "aarch64-darwin",
+        "aarch64-linux",
+        "x86_64-linux"
+      ]
+    }
+  },
+  "packages": [
+    {
+      "attr_path": "go_1_27",
+      "broken": false,
+      "derivation": "/nix/store/s5g06vbqc1f4zyv93f9m4q3yv4iy1rvd-go-1.27.1.drv",
+      "description": "Go Programming language",
+      "install_id": "go_1_27",
+      "license": "BSD-3-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "go-1.27.1",
+      "pname": "go_1_27",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T04:58:29.083431Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.27.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/9w6fm5c9v3lx0vxd4pqy7i8qmdfsmq7g-go-1.27.1"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "go_1_27",
+      "broken": false,
+      "derivation": "/nix/store/d3z4f96si97bqkksvkc1knfvis76w47f-go-1.27.1.drv",
+      "description": "Go Programming language",
+      "install_id": "go_1_27",
+      "license": "BSD-3-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "go-1.27.1",
+      "pname": "go_1_27",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:03.009723Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.27.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/40wlcfzp30vzja0qnrr2in1y24fvysz8-go-1.27.1"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "go_1_27",
+      "broken": false,
+      "derivation": "/nix/store/fcdhjm4l5d9x3m63nnid441912lqchgf-go-1.27.1.drv",
+      "description": "Go Programming language",
+      "install_id": "go_1_27",
+      "license": "BSD-3-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "go-1.27.1",
+      "pname": "go_1_27",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:03.624677Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.27.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/wzf7v2cm02izb6c7j0y7zqxv8iw50hz4-go-1.27.1"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "just",
+      "broken": false,
+      "derivation": "/nix/store/xhflrb4vyqqqc1j09rjcgk3gd27n76j4-just-1.58.0.drv",
+      "description": "Handy way to save and run project-specific commands",
+      "install_id": "just",
+      "license": "CC0-1.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "just-1.58.0",
+      "pname": "just",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T04:58:45.129259Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.58.0",
+      "outputs_to_install": [
+        "man",
+        "out"
+      ],
+      "outputs": {
+        "doc": "/nix/store/wfs31mbwslvi17fxswf81x0a83qcmnyq-just-1.58.0-doc",
+        "man": "/nix/store/s8abw9ifkmxk79z8zpn6zm9zrpbmh9zb-just-1.58.0-man",
+        "out": "/nix/store/kcyk3qjxrxbqv110yz408277m1i55faf-just-1.58.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "just",
+      "broken": false,
+      "derivation": "/nix/store/pclkrr58iby2lh2fqhjjmpvwj2538kzf-just-1.58.0.drv",
+      "description": "Handy way to save and run project-specific commands",
+      "install_id": "just",
+      "license": "CC0-1.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "just-1.58.0",
+      "pname": "just",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:23.410955Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.58.0",
+      "outputs_to_install": [
+        "man",
+        "out"
+      ],
+      "outputs": {
+        "doc": "/nix/store/pvgg8yxzhgld6kmy58bd4qxyihc87w1r-just-1.58.0-doc",
+        "man": "/nix/store/abh0yba8y6lk945hg6b0lq5g6vgai225-just-1.58.0-man",
+        "out": "/nix/store/2wdl8204rm1sgd31hxf24ykgw0jhrfnd-just-1.58.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "just",
+      "broken": false,
+      "derivation": "/nix/store/qc80gms126x8835chicai7zkawkvwg4c-just-1.58.0.drv",
+      "description": "Handy way to save and run project-specific commands",
+      "install_id": "just",
+      "license": "CC0-1.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "just-1.58.0",
+      "pname": "just",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:24.604868Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.58.0",
+      "outputs_to_install": [
+        "man",
+        "out"
+      ],
+      "outputs": {
+        "doc": "/nix/store/3kkygdf8x15png0ghk45r2g8px981zrd-just-1.58.0-doc",
+        "man": "/nix/store/ihi5s36gfidvbf6wrymh0z6qjb69bvhx-just-1.58.0-man",
+        "out": "/nix/store/nvydswi7ickfaim3l29afrm2238fjzlv-just-1.58.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "nodejs",
+      "broken": false,
+      "derivation": "/nix/store/j062ph4sqspapzz4bz4knx0icy2kfgjy-nodejs-24.20.0.drv",
+      "description": "Event-driven I/O framework for the V8 JavaScript engine",
+      "install_id": "nodejs",
+      "license": "MIT",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "nodejs-24.20.0",
+      "pname": "nodejs",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T04:58:52.829222Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "24.20.0",
+      "outputs_to_install": [
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/7pn7zw2sciv3fih9l4xpyvx0q8hlrr0w-nodejs-24.20.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "nodejs",
+      "broken": false,
+      "derivation": "/nix/store/z4ixg7wqqz4wvlvb3ava11m1khid3a1g-nodejs-24.20.0.drv",
+      "description": "Event-driven I/O framework for the V8 JavaScript engine",
+      "install_id": "nodejs",
+      "license": "MIT",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "nodejs-24.20.0",
+      "pname": "nodejs",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:39.153126Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "24.20.0",
+      "outputs_to_install": [
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/hnizp3p9k7gix8iqlip1pai9fy417ygy-nodejs-24.20.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "nodejs",
+      "broken": false,
+      "derivation": "/nix/store/0z73lh3jfj7hpng8kiinipj94wrwa0j9-nodejs-24.20.0.drv",
+      "description": "Event-driven I/O framework for the V8 JavaScript engine",
+      "install_id": "nodejs",
+      "license": "MIT",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "nodejs-24.20.0",
+      "pname": "nodejs",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:06:42.246577Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "24.20.0",
+      "outputs_to_install": [
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/v6wsd9nyglmwh32yn7w8z11dq9cksg4m-nodejs-24.20.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "postgresql_17",
+      "broken": false,
+      "derivation": "/nix/store/5jdp8srjyiyyhxklpyr6xliqcgqycn3m-postgresql-17.11.drv",
+      "description": "Powerful, open source object-relational database system",
+      "install_id": "postgresql",
+      "license": "PostgreSQL",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "postgresql-17.11",
+      "pname": "postgresql_17",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T04:59:08.096680Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "17.11",
+      "outputs_to_install": [
+        "man",
+        "out"
+      ],
+      "outputs": {
+        "dev": "/nix/store/z4c4s5z95i6am7jvfqayl396phrn58l9-postgresql-17.11-dev",
+        "doc": "/nix/store/5a2h53803c26850v9yrmma2dmrabzx7l-postgresql-17.11-doc",
+        "jit": "/nix/store/ybxhcnjyfgy7y27254v2v5ladwkqd8zx-postgresql-17.11-jit",
+        "lib": "/nix/store/7y5snk6mffcsi5kq8kbb8xblvbyqhwv1-postgresql-17.11-lib",
+        "man": "/nix/store/vk9rylnkc9gdn2s2qhjycdgjsy4dg0gm-postgresql-17.11-man",
+        "out": "/nix/store/rckrdii28pir6rrhqcby5z43i0z15d6l-postgresql-17.11",
+        "plperl": "/nix/store/jk0c5dj5bib3pkgafxvsaaajyvcwc4m6-postgresql-17.11-plperl",
+        "plpython3": "/nix/store/r5fkxhzkzwv4wv9nka6qpvhadwcn25g9-postgresql-17.11-plpython3",
+        "pltcl": "/nix/store/cwyspxlcp3ggv8q2qmm1dfl2aag8ipzp-postgresql-17.11-pltcl"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "postgresql_17",
+      "broken": false,
+      "derivation": "/nix/store/4hgwhanvd6sgm5b9w5km7485d0s8gxgy-postgresql-17.11.drv",
+      "description": "Powerful, open source object-relational database system",
+      "install_id": "postgresql",
+      "license": "PostgreSQL",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "postgresql-17.11",
+      "pname": "postgresql_17",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:59.578538Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "17.11",
+      "outputs_to_install": [
+        "man",
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/l0nc871s4gcggjbl09hxrvg1iainpz1r-postgresql-17.11-debug",
+        "dev": "/nix/store/27pq01vg72q47kaabjhindlrgziy3qlp-postgresql-17.11-dev",
+        "doc": "/nix/store/3i7xz221d2y9n5c1qrz1hz1lq5lhqjyb-postgresql-17.11-doc",
+        "jit": "/nix/store/1ic9qiqbcwql848psg3rlnwmm6mmwa0m-postgresql-17.11-jit",
+        "lib": "/nix/store/1k7lncxca62s7ngyjnpi4qkn6pnfxpb1-postgresql-17.11-lib",
+        "man": "/nix/store/4x5wdvlplr2pwma07iac206bxhwfagxl-postgresql-17.11-man",
+        "out": "/nix/store/k391a5cipfpdff638y5jdhnalcbnwvmq-postgresql-17.11",
+        "plperl": "/nix/store/1bd61nd7ya4cdj9jd43mpjgq85x2jjm7-postgresql-17.11-plperl",
+        "plpython3": "/nix/store/yv43q8wbl69irbm7prrkisc3cxhsy0nh-postgresql-17.11-plpython3",
+        "pltcl": "/nix/store/80qvxp27m59bky3166fzvywmxv94n4kn-postgresql-17.11-pltcl"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "postgresql_17",
+      "broken": false,
+      "derivation": "/nix/store/d64nl3qnd1fccbdvz4dl93rkpgy99i34-postgresql-17.11.drv",
+      "description": "Powerful, open source object-relational database system",
+      "install_id": "postgresql",
+      "license": "PostgreSQL",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "postgresql-17.11",
+      "pname": "postgresql_17",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:07:03.804253Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "17.11",
+      "outputs_to_install": [
+        "man",
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/zyxr3wgqs5mpka2z7n03yw6l6zy3aq48-postgresql-17.11-debug",
+        "dev": "/nix/store/gh2fiw8477mnkclx3mcm618xhyiwa1p2-postgresql-17.11-dev",
+        "doc": "/nix/store/gibn70aibq2cqijh7hkhbn29fpmjki7z-postgresql-17.11-doc",
+        "jit": "/nix/store/s3kjbfaqnz946xvjg3hqh4562f5jfyip-postgresql-17.11-jit",
+        "lib": "/nix/store/x988mrbq071rpg36gs39nq57l62668qg-postgresql-17.11-lib",
+        "man": "/nix/store/px0asx867rg0i5hislnh6y0kg1kn3viq-postgresql-17.11-man",
+        "out": "/nix/store/0m6z1g5zrgngyysmgj7qsvcz0xz8l8a9-postgresql-17.11",
+        "plperl": "/nix/store/l7ypcflyc9ni6ha9x9dqap0a6fk9rw1p-postgresql-17.11-plperl",
+        "plpython3": "/nix/store/2gybfb68j0x8v3d6k1ggkdhxjgksq01q-postgresql-17.11-plpython3",
+        "pltcl": "/nix/store/sdlpx7frd1wwlilhyf6vg6p6wygvr5i6-postgresql-17.11-pltcl"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "watchexec",
+      "broken": false,
+      "derivation": "/nix/store/lw13s15ijappjwcv5qv3fbr33kgdc7nn-watchexec-2.5.1.drv",
+      "description": "Executes commands in response to file modifications",
+      "install_id": "watchexec",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "watchexec-2.5.1",
+      "pname": "watchexec",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:01:28.295812Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.5.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/brylx8xrzkn69lc0l56r40sv1k8bc520-watchexec-2.5.1"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "watchexec",
+      "broken": false,
+      "derivation": "/nix/store/6ai5g6293ww5l0710qjcd3q08shynk5h-watchexec-2.5.1.drv",
+      "description": "Executes commands in response to file modifications",
+      "install_id": "watchexec",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "watchexec-2.5.1",
+      "pname": "watchexec",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:33:53.668732Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.5.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/w84j900bg1vns7wbzq09kkrs2sv5zkz3-watchexec-2.5.1"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "watchexec",
+      "broken": false,
+      "derivation": "/nix/store/iq210vs5c1a03zhgf0lipr0axyjl6lbg-watchexec-2.5.1.drv",
+      "description": "Executes commands in response to file modifications",
+      "install_id": "watchexec",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "watchexec-2.5.1",
+      "pname": "watchexec",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:10:02.873359Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.5.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/sgp66b8sl93jik6g1h3g6j5b724rvgsp-watchexec-2.5.1"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    }
+  ]
+}
