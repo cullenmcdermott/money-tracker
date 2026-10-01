@@ -62,6 +62,8 @@ const rangeLabel = ms => ms.length === 1 ? mName(ms[0]) : `${mShort(ms[0])} ${ms
 const nwPoints = () => { const ms = windowMonths(), a = ms[0] + '-01', b = ms.at(-1) + '-31'; return D.networth.filter(p => p.date >= a && p.date <= b) }
 const monthOf = m => D.monthly.find(r => r.month === m) || { income: 0, expense: 0 }
 const errItems = () => D.items.filter(i => i.last_error)
+// The first day or two of a month has nothing posted yet (SimpleFIN runs about a day behind), so the overview opens on last month.
+const curEmpty = () => !monthOf(CUR).income && !monthOf(CUR).expense
 
 async function loadCore() {
   const [monthly, networth, accounts, items, cats] = await Promise.all([api('/summary/monthly'), api('/networth'), api('/accounts'), api('/items'), api('/categories')])
@@ -70,7 +72,7 @@ async function loadCore() {
   derive()
 }
 async function reload() {
-  try { const first = !state.loaded; await loadCore(); state.err = ''; state.loaded = true; if (first) { state.month = CUR; state.year = +CUR.slice(0, 4) } } catch (e) { state.err = e.message }
+  try { const first = !state.loaded; await loadCore(); state.err = ''; state.loaded = true; if (first) { state.month = curEmpty() && MONTHS.length > 1 ? MONTHS.at(-2) : CUR; state.year = +state.month.slice(0, 4) } } catch (e) { state.err = e.message }
   render()
 }
 const load = (k, path, withTotal) => cache.has(k) ? 0 : api(path, null, withTotal).then(v => cache.set(k, v))
@@ -131,8 +133,10 @@ function overview() {
   if (!D.items.length) return firstRun()
   const key = periodKey(), isM = state.mode === 'month', now = new Date()
   let sub
-  if (isM) sub = state.month === CUR ? `Month to date${CUR === NOW_M ? `, through ${dShort(today())}` : ''}` : 'Full month'
-  else {
+  if (isM) {
+    sub = state.month === CUR ? `Month to date${CUR === NOW_M ? `, through ${dShort(today())}` : ''}` : 'Full month'
+    if (state.month === MONTHS.at(-2) && curEmpty()) sub += ` <span aria-hidden="true">·</span> ${mName(CUR)} has nothing posted yet. <button class="linkbtn" data-act="step" data-d="1">See ${mName(CUR)}</button>`
+  } else {
     const y = state.year, ms = MONTHS.filter(m => m.startsWith(String(y))), from = mShort(ms[0]), to = mShort(ms.at(-1))
     const partial = ms[0] !== `${y}-01`
     sub = y === now.getFullYear() ? `Year to date, ${from} to ${to}${partial ? ', where the history starts' : ''}` : partial ? `${from} to ${to} only, where the history starts` : 'Full year'
@@ -147,6 +151,7 @@ function overview() {
     const share = c => privacy.on && cur.a.income ? `${pct(c / cur.a.income)}<small class="muted" style="font-weight:400;font-size:12px"> of income</small>` : usd0(c) // privacy: shares instead of masks
     stats = `<div><span class="lab"><i style="background:var(--income)"></i>In</span><b>${usd0(cur.a.income)}</b></div><div><span class="lab"><i style="background:var(--spend)"></i>Out</span><b>${share(cur.a.expense)}</b></div><div><span class="lab"><i style="background:${kept >= 0 ? 'var(--kept)' : 'var(--ink2)'}"></i>${kept >= 0 ? 'Kept' : 'Over by'}</span><b>${share(Math.abs(kept))}</b></div>${totals(key).invested ? `<div><span class="lab"><i style="background:var(--cat-x3)"></i>${totals(key).invested > 0 ? 'Invested' : 'Taken from investments'}</span><b>${share(Math.abs(totals(key).invested))}</b></div>` : ''}`
     body = cur.total ? `<div id="readout" aria-live="polite"></div><div id="flowbox"></div><p class="cap">${state.flowAll ? '<button class="linkbtn" data-act="flowless">Group small categories</button> ' : ''}Line thickness is proportional to amount. Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions.<span id="mincap"></span></p>`
+      : isM && key === CUR && MONTHS.length > 1 ? `<div class="empty"><p><strong>${mName(key)} just started</strong></p><p>Transactions usually show up a day or two after they're made.</p><p><button class="btn ghost" data-act="step" data-d="-1">See ${mName(MONTHS.at(-2))}</button></p></div>`
       : `<div class="empty"><p><strong>Nothing recorded for ${esc(isM ? mName(key) : key)}</strong></p><p>No income or spending in this period. Try another one.</p></div>`
   } else {
     cur = null
