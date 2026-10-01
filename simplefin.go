@@ -116,6 +116,8 @@ func (a *app) syncSimplefin(ctx context.Context) error {
 			a.simplefin.progress.set("Suggesting account types", 0, 0)
 		}
 		a.jevAccountTypes(ctx) // best effort: failures are logged and never fail the sync
+		a.simplefin.progress.set("Checking for charges worth a look", 0, 0)
+		a.alertsAfterSync(ctx) // best effort too
 	}
 	return err
 }

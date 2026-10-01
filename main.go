@@ -390,6 +390,7 @@ func (a *app) routes() http.Handler {
 	a.merchantRoutes(mux)
 	a.backupRoutes(mux)
 	a.recurringRoutes(mux)
+	a.alertRoutes(mux)
 	dist, _ := fs.Sub(site, "web/dist")
 	mux.Handle("/", http.FileServerFS(dist))
 	return mux

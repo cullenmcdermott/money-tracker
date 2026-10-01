@@ -37,6 +37,8 @@ func seedBackup(t *testing.T, db *sql.DB) {
 			('t2','a','2026-09-02',500000,'Pay','',true)`,
 		`INSERT INTO rules(pattern,category) VALUES('coffee','Dining'),('pay','Income')`,
 		`INSERT INTO merchants(key,display_name,merged_into,category) VALUES('coffee','Coffee','','Dining')`,
+		`INSERT INTO alerts(kind,key,transaction_id,reasons,dismissed_at) VALUES('new_merchant','t1','t1','["First charge"]',now()),('pace','2026-09:Dining',NULL,'["over 50% above usual"]',NULL)`,
+		`INSERT INTO merchant_locations(merchant_key,base,source) VALUES('coffee',true,'owner')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)

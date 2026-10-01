@@ -13,7 +13,7 @@ async function api(path, options, withTotal) {
 const send = (method, path, body) => api(path, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
 
 /* ---------- state ---------- */
-const D = { monthly: [], networth: [], accounts: [], items: [], cats: [], config: {}, rules: null, recurring: null }
+const D = { monthly: [], networth: [], accounts: [], items: [], cats: [], config: {}, rules: null, recurring: null, alerts: null }
 const cache = new Map() // 'c:<period>' categories, 'i:<period>' income sources, 'u:<period>' uncategorized count
 const inflight = new Set()
 const acctTx = new Map()
@@ -68,7 +68,7 @@ const curEmpty = () => !monthOf(CUR).income && !monthOf(CUR).expense
 async function loadCore() {
   const [monthly, networth, accounts, items, cats] = await Promise.all([api('/summary/monthly'), api('/networth'), api('/accounts'), api('/items'), api('/categories')])
   Object.assign(D, { monthly, networth, accounts, items, cats })
-  cache.clear(); acctTx.clear(); state.perr = {}; D.recurring = null
+  cache.clear(); acctTx.clear(); state.perr = {}; D.recurring = null; D.alerts = null
   derive()
 }
 async function reload() {
@@ -160,6 +160,7 @@ function overview() {
     if (!err) startPeriod(key)
   }
   const uc = cur?.uncat || 0
+  loadAlerts()
   return `${banner()}${navHTML(true)}
   <p class="sub">${sub} <span aria-hidden="true">·</span> ${syncLine()}</p>
   ${notices}
@@ -172,6 +173,7 @@ function overview() {
     <div class="legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--spend)"></i>Spending</span></div></div>
     <div class="cfwrap" id="cfwrap"></div>
     <p class="cap">Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions. Highlighted bars are the selected period.${windowMonths().includes(CUR) ? ` ${esc(mName(CUR).replace(/ \d+$/, ''))} is month to date.` : ''} Select a bar to open its transactions.</p></section>
+  ${alertLine()}
   ${(nt => nt ? `<p class="need">${nt} account${nt === 1 ? '' : 's'} may have the wrong type. <button class="linkbtn" data-act="go" data-v="accounts">Check account types ${icon('arrow', 14)}</button></p>` : '')(D.accounts.filter(a => !a.type_confident).length)}
   ${uc ? `<p class="need">${uc}${uc >= 1000 ? '+' : ''} transaction${uc === 1 ? '' : 's'} need${uc === 1 ? 's' : ''} a category in this period. <button class="linkbtn" data-act="needcat">Review by merchant ${icon('arrow', 14)}</button></p>` : ''}`
 }
@@ -466,7 +468,7 @@ function transactions() {
   const F = state.f
   const catOpts = [...D.cats]; if (F.cat !== 'all' && F.cat !== '__none' && !catOpts.includes(F.cat)) catOpts.push(F.cat)
   const flowTag = F.flow ? `<button class="btn ghost sm flowtag" data-act="unflow">${F.flow === 'in' ? 'Money in only' : 'Money out only'} ${icon('x', 14)}</button>` : ''
-  return `${banner()}<div class="pagehead"><h1>Transactions</h1><span class="muted" id="txcount"></span><a class="btn ghost sm" href="#review" style="margin-left:auto">Review by merchant ${icon('arrow', 14)}</a></div>
+  return `${banner()}<div class="pagehead"><h1>Transactions</h1><span class="muted" id="txcount"></span><a class="btn ghost sm" href="#alerts" style="margin-left:auto">Alerts${openAl().length ? ` (${openAl().length})` : ''}</a><a class="btn ghost sm" href="#review">Review by merchant ${icon('arrow', 14)}</a></div>
   <div class="filters">
    <select data-f="month" aria-label="Month"><option value="all">All months</option>${YEARS.map(y => `<option value="${y}" ${F.month === String(y) ? 'selected' : ''}>All of ${y}</option>`).join('')}${[...MONTHS].reverse().map(m => `<option value="${m}" ${F.month === m ? 'selected' : ''}>${mName(m)}</option>`).join('')}</select>
    <select data-f="cat" aria-label="Category"><option value="all">All categories</option><option value="__none" ${F.cat === '__none' ? 'selected' : ''}>Uncategorized</option>${catOpts.map(c => `<option value="${esc(c)}" ${F.cat === c ? 'selected' : ''}>${esc(catName(c))}</option>`).join('')}</select>
@@ -620,6 +622,60 @@ function recurring() {
   ${state.recHidden ? group('Not recurring', hidden) : ''}`
 }
 
+/* ---------- Alerts (#alerts): charges worth a second look, found after each sync ---------- */
+const AL_KIND = { new_merchant: 'New merchant', unusual_amount: 'Unusual amount', card_testing: 'Possible test charge', duplicate: 'Possible duplicate', away: 'Away from home' }
+const AL_JEV = {
+  suspicious: ['looks suspicious', 'Jev thinks this looks suspicious. Check it with your bank if you don’t recognize it.'],
+  unusual: ['unusual but plausible', 'Jev: unusual for you, but plausible.'],
+  normal: ['looked normal', 'Jev checked it and it looked normal.'],
+}
+function loadAlerts() {
+  if (D.alerts != null || state.perr.al || inflight.has('al')) return
+  inflight.add('al')
+  api('/alerts').then(v => { D.alerts = v }, e => { state.perr.al = e.message }).finally(() => { inflight.delete('al'); if (state.view === 'alerts' || state.view === 'overview') render() })
+}
+const openAl = () => (D.alerts || []).filter(a => !a.checked)
+const above = a => Math.round((a.so_far / a.usual_by_now - 1) * 100)
+// One line for the Overview: the newest charge by name, or the categories running high.
+function alertLine() {
+  const open = openAl(); if (!open.length) return ''
+  const top = open.find(a => a.tx), v = top && AL_JEV[top.jev]
+  const text = top ? `${usd2(top.tx.amount)} at ${esc(top.tx.merchant)}${v ? ` (Jev says ${v[0]})` : ''}${open.length > 1 ? `, and ${open.length - 1} more, are worth a look.` : ' is worth a look.'}`
+    : open.length > 1 ? `${open.length} spending categories are running high.` : `${esc(catName(open[0].category))} spending is running high.`
+  return `<div class="callout">${icon('alert', 18)}<span>${text}</span><button class="linkbtn" data-act="go" data-v="alerts">Review alerts ${icon('arrow', 14)}</button></div>`
+}
+function alerts() {
+  const head = `${banner()}<div class="pagehead"><h1>Alerts</h1></div>`, err = state.perr.al
+  if (D.alerts == null) {
+    loadAlerts()
+    return `${head}<section class="panel">${err ? `<div class="empty"><p><strong>Could not load alerts</strong></p><p>${esc(err)}</p><p><button class="btn ghost" data-act="retryal">Retry</button></p></div>` : '<div class="load" role="status">Loading…</div>'}</section>`
+  }
+  const A = D.alerts
+  const card = a => {
+    const i = A.indexOf(a)
+    if (!a.tx) {
+      const mx = Math.max(a.so_far, a.usual, 1), cat = esc(catName(a.category))
+      return `<article class="acard"><div class="kicker"><span>Spending running high</span><span>${mName(a.month)}</span></div>
+      <h2 class="ahead">${cat} is ${above(a)}% above usual</h2>
+      <div class="figs"><div><b>${usd0(a.so_far)}</b><span>so far</span></div><div><b>${usd0(a.usual_by_now)}</b><span>usual by now</span></div><div><b>${usd0(a.usual)}</b><span>usual month</span></div></div>
+      <div class="abar" aria-hidden="true"><i style="width:${f1(a.so_far / mx * 100)}%"></i><b style="left:calc(${f1(a.usual_by_now / mx * 100)}% - 1px)"></b></div>
+      <div class="aacts"><button class="btn ghost sm" data-act="alfine" data-i="${i}">Fine this month</button><button class="btn ghost sm" data-act="alcat" data-i="${i}">See ${cat} spending</button></div></article>`
+    }
+    const t = a.tx, v = AL_JEV[a.jev]
+    return `<article class="acard"><div class="kicker"><span>${AL_KIND[a.kind] || a.kind}</span><span>${dShort(t.date)} · ${esc(t.account)}</span></div>
+    <h2 class="ahead">${usd2(t.amount)} at ${esc(t.merchant)}</h2>
+    <ul class="why">${a.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+    ${v ? `<p class="verdict v-${a.jev}">${v[1]}</p>` : ''}
+    <div class="aacts"><button class="btn ghost sm" data-act="alfine" data-i="${i}">Looks fine</button><button class="btn ghost sm" data-act="altx" data-i="${i}">Open transaction</button></div></article>`
+  }
+  const open = openAl(), checked = A.filter(a => a.checked)
+  return `${head}
+  <p class="sub">Charges worth a second look, found after each sync from your own history. Mark the ones you recognize as fine; they won't come back. <a href="#transactions">Back to Transactions</a></p>
+  ${open.length ? `<div class="agrid">${open.map(card).join('')}</div>` : '<section class="panel"><div class="empty">Nothing to look at. New alerts show up here after a sync.</div></section>'}
+  ${checked.length ? `<p class="need"><button class="linkbtn" data-act="alchecked" aria-expanded="${!!state.alChecked}">${state.alChecked ? 'Hide' : 'Show'} ${checked.length} checked by Jev</button></p>` : ''}
+  ${state.alChecked && checked.length ? `<h2 class="asec">Checked, looked normal</h2><div class="agrid">${checked.map(card).join('')}</div>` : ''}`
+}
+
 /* ---------- Investments (#investments): where each investment account's change came from ---------- */
 // INV.data: last GET /investments for INV.period. Added = transfers in, payroll, conversions and share sales;
 // market change = end - start - added - dividends (computed by the server).
@@ -712,7 +768,7 @@ function settings() {
   ${D.me?.auth ? `<section class="panel sec"><h2>Account</h2><div class="frow" style="margin:0"><span>Signed in as <strong>${esc(D.me.email)}</strong></span><button class="btn ghost" data-act="signout">Sign out</button></div></section>` : ''}
   ${backupsSection()}
   <section class="panel sec"><h2>Merchants</h2><p class="muted" style="font-size:13.5px">Rename merchants and merge duplicates, like a store that shows up under several names.</p><div class="frow"><a class="btn ghost" href="#merchants">Manage merchants ${icon('arrow', 16)}</a></div></section>
-  <section class="panel sec"><h2>Smart suggestions (Jev)</h2><p class="muted" style="font-size:13.5px"><strong>${D.config.jev_enabled ? 'On' : 'Off'}</strong>${D.config.jev_enabled ? ` · ${D.config.jev_merchants} merchant${D.config.jev_merchants === 1 ? '' : 's'} scored and saved` : ''}. ${jevUsageLine()}${D.config.jev_enabled ? 'Merchants and accounts the local rules cannot place are sent to Jev: name, bank descriptions, typical amount, and income or spending; for accounts, institution, name, and balance sign.' : 'Set <code>JEV_API_KEY</code> and restart to turn it on. Nothing is sent to Jev while it is off.'}</p></section>
+  <section class="panel sec"><h2>Smart suggestions (Jev)</h2><p class="muted" style="font-size:13.5px"><strong>${D.config.jev_enabled ? 'On' : 'Off'}</strong>${D.config.jev_enabled ? ` · ${D.config.jev_merchants} merchant${D.config.jev_merchants === 1 ? '' : 's'} scored and saved` : ''}. ${jevUsageLine()}${D.config.jev_enabled ? 'Merchants and accounts the local rules cannot place are sent to Jev: name, bank descriptions, typical amount, and income or spending; for accounts, institution, name, and balance sign; for alerts, the charge's description, amount and reasons, card or bank account, your usual state and top categories.' : 'Set <code>JEV_API_KEY</code> and restart to turn it on. Nothing is sent to Jev while it is off.'}</p></section>
   <section class="panel sec"><h2>Appearance</h2><div class="seg themeseg" role="group" aria-label="Theme">${['system', 'light', 'dark'].map(t => `<button data-act="themeset" data-v="${t}" aria-pressed="${state.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></section>`
 }
 // Jev usage in Settings: requests and tokens for the last 30 days and all time, with the estimated cost (never masked by privacy mode).
@@ -1082,7 +1138,7 @@ document.addEventListener('keydown', e => {
 /* ---------- shell ---------- */
 const VIEWS = [['overview', 'Overview'], ['transactions', 'Transactions'], ['accounts', 'Accounts'], ['investments', 'Investments'], ['spending', 'Spending'], ['settings', 'Settings']]
 // Routes with no nav tab of their own; the tab of the view they belong to stays highlighted.
-const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'] }
+const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'], alerts: ['transactions', 'Alerts'] }
 const validView = v => VIEWS.some(x => x[0] === v) || v in SUBVIEWS
 function paintNav() {
   const link = ([v, l]) => `<a href="#${v}" ${(SUBVIEWS[state.view]?.[0] || state.view) === v ? 'aria-current="page"' : ''}>${icon(v, 20)}<span>${l}</span></a>`
@@ -1099,11 +1155,11 @@ function paintNav() {
 function render(top) {
   const v = state.view, main = $('#main')
   if (!state.loaded) main.innerHTML = state.err ? `<div class="panel first"><h1>Could not load</h1><p>${esc(state.err)}</p><button class="btn" data-act="reload">Retry</button></div>` : '<div class="load" role="status">Loading…</div>'
-  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring }[v]()
+  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring, alerts }[v]()
   paintNav()
   document.title = (VIEWS.find(x => x[0] === v)?.[1] || SUBVIEWS[v]?.[1] || 'Overview') + ' · Money Tracker'
   if (state.loaded && v === 'overview') { drawFlow(); drawNW(); drawCF(); const box = $('#flowbox'); if (box) flowEvents(box) }
-  if (state.loaded && v === 'transactions') { paintTx(); fetchTx('reset') }
+  if (state.loaded && v === 'transactions') { paintTx(); fetchTx('reset'); loadAlerts() }
   if (state.loaded && v === 'settings' && D.rules === null && !state.rulesErr) loadRules()
   if (state.loaded && v === 'settings' && bk.data === null && !bk.err && !bk.phase) loadBackups()
   if (state.loaded && v === 'review') loadReview()
@@ -1164,6 +1220,15 @@ document.addEventListener('click', e => {
   }
   else if (a === 'rechidden') { state.recHidden = !state.recHidden; render() }
   else if (a === 'retryrec') { delete state.perr.rec; render() }
+  else if (a === 'retryal') { delete state.perr.al; render() }
+  else if (a === 'alchecked') { state.alChecked = !state.alChecked; render() }
+  else if (a === 'altx') { const t = D.alerts[+d.i].tx; state.f = { ...blankF(), month: t.date.slice(0, 7), q: t.description }; go('transactions') }
+  else if (a === 'alcat') { const p = D.alerts[+d.i]; state.f = { ...blankF(), month: p.month, cat: p.category }; go('transactions') }
+  else if (a === 'alfine') {
+    const al = D.alerts[+d.i], url = `/alerts/${al.id}/dismiss`, name = al.tx ? al.tx.merchant : catName(al.category) + ' spending'
+    const redo = p => p.then(() => { D.alerts = null; return true }, e => { toast(e.message, { err: true }) }).finally(render)
+    redo(send('POST', url, {})).then(ok => ok && toast(`Marked ${name} as fine.`, { undo: () => redo(send('DELETE', url)) }))
+  }
   else if (a === 'spendcat') { state.f = { ...blankF(), month: state.month, cat: spendRows[+d.i].raw === '' ? '__none' : spendRows[+d.i].raw }; go('transactions') }
   else if (a === 'sync') doSync()
   else if (a === 'rule1') { state.ruleDel = +d.id; render() }

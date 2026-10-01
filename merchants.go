@@ -47,6 +47,17 @@ var (
 	usStates       = " al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc "
 )
 
+func isState(word string) bool { return len(word) == 2 && strings.Contains(usStates, " "+word+" ") }
+
+// chargeState is the US state a bank description ends with ("SAFEWAY #1234 DENVER CO" -> "CO"), else "".
+func chargeState(raw string) string {
+	fields := strings.Fields(merchantJunk.ReplaceAllString(strings.ToLower(raw), " "))
+	if n := len(fields); n >= 2 && isState(fields[n-1]) {
+		return strings.ToUpper(fields[n-1])
+	}
+	return ""
+}
+
 // cleanMerchant turns a raw bank description into a merchant key and a readable display name.
 // ponytail: heuristic; a trailing "city state" is only dropped as one city word, so multi-word cities
 // without a store number can leave a stray word (fix with a rename or merge).
@@ -76,7 +87,7 @@ func cleanMerchant(raw string) (key, display string) {
 			break
 		}
 	}
-	if n := len(fields); n >= 2 && strings.Contains(usStates, " "+fields[n-1]+" ") {
+	if n := len(fields); n >= 2 && isState(fields[n-1]) {
 		fields = fields[:n-1]
 		if n-1 >= 3 {
 			fields = fields[:n-2]

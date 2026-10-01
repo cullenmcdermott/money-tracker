@@ -63,6 +63,9 @@ func newFakeJev(t *testing.T, answer func(kind, name string) (string, float64)) 
 		for id, q := range req.Questions {
 			for kind, byID := range items {
 				name, _ := byID[id]["name"].(string)
+				if d, ok := byID[id]["description"].(string); ok { // alert triage sends no name
+					name = d
+				}
 				choice, conf := f.answer(kind, name)
 				if choice == "" {
 					continue

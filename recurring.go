@@ -55,7 +55,7 @@ type recurring struct {
 	Next     string `json:"next"`
 	Count    int    `json:"count"`
 	Active   bool   `json:"active"`
-	New      bool   `json:"new"` // became recurring in the last 30 days
+	New      bool   `json:"new"`                // became recurring in the last 30 days
 	Mark     string `json:"mark"`               // '', cancelled or hidden: the owner's mark on any key in the group
 	MarkKey  string `json:"mark_key,omitempty"` // the key holding the mark, to clear it
 	// Cancelled, but billed again after the mark.

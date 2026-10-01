@@ -87,6 +87,19 @@ The app signs in with OIDC. It was built for [Pocket ID](https://pocket-id.org),
 
 `OIDC_ALLOWED_EMAILS` also works. Groups are safer, because in some providers users can change their own email. Anyone not allowed gets a 403 page. Rotating `SESSION_SECRET` signs everyone out.
 
+## Alerts
+
+After each sync the app looks for charges worth a second look, using only your own history. Nothing is sent outside the app; open alerts show as one line on the Overview and in full under Transactions → Alerts.
+
+- **New merchant:** the first charge from a merchant, $250 or more.
+- **Unusual amount:** at least 3× the merchant's largest earlier charge and $50 more.
+- **Possible test charge:** a charge under $5 at a new merchant, followed within 3 days by a new-merchant charge of $250 or more on the same account.
+- **Possible duplicate:** same merchant, amount and account on the same day, $20 or more.
+- **Away from home:** a charge whose description ends in a state other than your usual one, with no other charges there within 3 days. It waits 2 days for others to post first.
+- **Spending running high:** from the 7th of the month, a category's month to date is at least 1.25× the same days of the last 3 months, and $100 more.
+
+Only charges from the last 14 days are checked, and new-merchant, amount and test-charge alerts wait until an account has 60 days of history. **Looks fine** removes one for good (for an away alert, it also remembers that merchant as based elsewhere); **Undo** brings it back. With Jev on, each charge alert also gets a verdict (normal, unusual or suspicious), and confident "normal" ones are listed apart.
+
 ## Smart suggestions (Jev, optional)
 
 Set `JEV_API_KEY` to let Jev answer what your own history and keyword rules can't. It is off by default. Answers are saved per merchant, and those below `JEV_MIN_CONFIDENCE` are shown as low-confidence guesses. Settings shows the token usage and estimated cost.
@@ -97,6 +110,8 @@ Requests are batched, up to 20 questions each. Exactly what is sent:
 - How often each merchant charges, and `JEV_HOME_LOCATION` if set.
 - Up to 3 merchants you already categorized per category, as examples.
 - For accounts whose type is uncertain: the institution, account name, and whether the balance is positive, negative or zero.
+- For merchants in an alert whose descriptions name a place: the display name and up to 3 bank descriptions, to ask whether that place is just the company's base.
+- For each new charge alert: its bank description, amount, reasons, whether it was on a credit card or bank account, your top 5 spending categories of the last 90 days, your usual state, and `JEV_HOME_LOCATION` if set.
 
 Never sent: balances, amounts for accounts, transaction ids or dates. Errors and timeouts are logged without the key and never break suggestions or sync.
 
