@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -10,14 +11,17 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
-// A home's value comes from the Ada County Assessor's public parcel layer: the total assessed value, which Idaho sets
-// at market value each January. Only the parcel number is sent. When the assessed value changes, it becomes the
-// account's balance from that day on (decided 2026-09-30: the county value, not a Zillow estimate).
-var assessorURL = "https://services2.arcgis.com/dgGjZc6xAH5m5JyP/arcgis/rest/services/Parcels/FeatureServer/5/query"
+// A home's value comes from a county assessor's public ArcGIS parcel layer (ASSESSOR_URL, its FeatureServer layer
+// /query endpoint): the total assessed value. Only the parcel number is sent. When the assessed value changes, it
+// becomes the account's balance from that day on (the county value, not a Zillow-style estimate). ASSESSOR_FIELDS
+// names the layer's parcel, value and year fields, which differ between counties.
+var assessorURL = os.Getenv("ASSESSOR_URL")
+var assessorFields = cmp.Or(os.Getenv("ASSESSOR_FIELDS"), "PARCEL,TOTALVALUE,PROPYEAR")
 
 type execQuerier interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
@@ -25,7 +29,14 @@ type execQuerier interface {
 }
 
 func assessedValue(ctx context.Context, parcel string) (cents int64, year int, err error) {
-	q := url.Values{"where": {"PARCEL='" + strings.ReplaceAll(parcel, "'", "") + "'"}, "outFields": {"TOTALVALUE,PROPYEAR"}, "returnGeometry": {"false"}, "f": {"json"}}
+	if assessorURL == "" {
+		return 0, 0, errors.New("ASSESSOR_URL is not set")
+	}
+	f := strings.Split(assessorFields, ",")
+	if len(f) != 3 {
+		return 0, 0, errors.New("ASSESSOR_FIELDS must be three comma-separated names: parcel,value,year")
+	}
+	q := url.Values{"where": {f[0] + "='" + strings.ReplaceAll(parcel, "'", "") + "'"}, "outFields": {f[1] + "," + f[2]}, "returnGeometry": {"false"}, "f": {"json"}}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assessorURL+"?"+q.Encode(), nil)
@@ -39,20 +50,21 @@ func assessedValue(ctx context.Context, parcel string) (cents int64, year int, e
 	defer res.Body.Close()
 	var body struct {
 		Features []struct {
-			Attributes struct {
-				TotalValue float64 `json:"TOTALVALUE"`
-				PropYear   int     `json:"PROPYEAR"`
-			} `json:"attributes"`
+			Attributes map[string]any `json:"attributes"`
 		} `json:"features"`
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&body); err != nil {
 		return 0, 0, fmt.Errorf("assessor response: %w", err)
 	}
-	if len(body.Features) != 1 || body.Features[0].Attributes.TotalValue <= 0 {
+	if len(body.Features) != 1 {
 		return 0, 0, errors.New("assessor has no value for parcel " + parcel)
 	}
-	a := body.Features[0].Attributes
-	return int64(a.TotalValue * 100), a.PropYear, nil
+	value, _ := body.Features[0].Attributes[f[1]].(float64)
+	y, _ := body.Features[0].Attributes[f[2]].(float64)
+	if value <= 0 {
+		return 0, 0, errors.New("assessor has no value for parcel " + parcel)
+	}
+	return int64(value * 100), int(y), nil
 }
 
 // refreshProperty records the parcel's assessed value as today's balance when it differs from the current one, and

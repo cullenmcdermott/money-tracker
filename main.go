@@ -108,8 +108,8 @@ func (a *app) investedByMonth(ctx context.Context) (map[string]int64, error) {
 	return out, rows.Err()
 }
 
-// institutionWordSQL is the distinctive word of an institution name, as bank descriptions spell it: "Charles Schwab US"
-// -> "schwab", "Fidelity Investments" -> "fidelity", "Vanguard" -> "vanguard".
+// institutionWordSQL is the distinctive word of an institution name, as bank descriptions spell it: "Contoso Bank US"
+// -> "contoso", "Fabrikam Investments" -> "fabrikam", "Northwind" -> "northwind".
 const institutionWordSQL = `COALESCE((SELECT w FROM regexp_split_to_table(lower(ia.institution), '\s+') w
 	WHERE w NOT IN ('charles','bank','us','the','investments','financial','group','of','and','na') AND length(w) > 2 LIMIT 1), '~')`
 

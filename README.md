@@ -137,6 +137,8 @@ money-tracker import-monarch --transactions Transactions.csv --balances Balances
 | `BACKUP_KEEP` | `14` | |
 | `BACKUP_TIME` | `03:00` | `HH:MM`, server local time. The image has no time zone data, so this is UTC there. |
 | `BACKUP_MAX_UPLOAD` | `1073741824` | Largest restore upload, in bytes. |
+| `ASSESSOR_URL` | unset | A county assessor's public ArcGIS parcel layer query endpoint (`…/FeatureServer/<layer>/query`). Turns on daily home value refresh for property accounts imported with `import-monarch --property`. |
+| `ASSESSOR_FIELDS` | `PARCEL,TOTALVALUE,PROPYEAR` | That layer's parcel number, total assessed value and tax year fields, comma-separated. |
 | `JEV_API_KEY` | unset | Turns Jev on. |
 | `JEV_HOME_LOCATION` | unset | For example `Denver, Colorado`. Lets Jev tell trips from local spending. |
 | `JEV_MIN_CONFIDENCE` | `0.5` | |

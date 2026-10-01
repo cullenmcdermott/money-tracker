@@ -169,7 +169,7 @@ func TestCashflowCountsOnlyCashAccountsAndReportsInvested(t *testing.T) {
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO items(id) VALUES('item');
 		INSERT INTO accounts(id,item_id,name,guessed_type) VALUES('chk','item','Checking','depository'),('card','item','Card','credit'),
-			('brk','item','Brokerage','investment'),('rsu','item','RSUs','other'),('mort','item','Mortgage','loan')`); err != nil {
+			('brk','item','Brokerage','investment'),('stock','item','Stock Plan','other'),('mort','item','Mortgage','loan')`); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range []struct {
@@ -183,17 +183,17 @@ func TestCashflowCountsOnlyCashAccountsAndReportsInvested(t *testing.T) {
 		{"brk-in", "brk", "2026-08-03", 100000, "to-brk"},
 		{"buy", "brk", "2026-08-04", -100000, nil}, // fund purchase inside the brokerage: not spending
 		{"div", "brk", "2026-08-05", 3000, nil},    // dividend: not income
-		{"vest", "rsu", "2026-08-06", 1800000, nil},
+		{"vest", "stock", "2026-08-06", 1800000, nil},
 		{"principal", "mort", "2026-08-07", 56000, nil},
-		{"sale", "rsu", "2026-09-01", -40000, "back"}, // money back to checking: negative invested
+		{"sale", "stock", "2026-09-01", -40000, "back"}, // money back to checking: negative invested
 		{"back", "chk", "2026-09-01", 40000, "sale"},
-		{"VANGUARD BUY INVESTMENT", "chk", "2026-08-10", -25000, nil}, // unpaired, marked Transfer below: invested, not spending
+		{"CONTOSO BUY INVESTMENT", "chk", "2026-08-10", -25000, nil}, // unpaired, marked Transfer below: invested, not spending
 	} {
 		if _, err := db.Exec(`INSERT INTO transactions(id,account_id,date,amount,name,transfer_id) VALUES($1,$2,$3,$4,$1,$5)`, r.id, r.account, r.date, r.amount, r.transfer); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`UPDATE accounts SET institution='Vanguard' WHERE id='brk'; UPDATE transactions SET user_category='Transfer' WHERE id='VANGUARD BUY INVESTMENT'`); err != nil {
+	if _, err := db.Exec(`UPDATE accounts SET institution='Contoso Investments' WHERE id='brk'; UPDATE transactions SET user_category='Transfer' WHERE id='CONTOSO BUY INVESTMENT'`); err != nil {
 		t.Fatal(err)
 	}
 	got, err := (&app{db: db}).monthly(context.Background())

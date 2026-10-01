@@ -102,7 +102,7 @@ func importMonarchCLI(ctx context.Context, db *sql.DB, args []string, out io.Wri
 	fs := flag.NewFlagSet("import-monarch", flag.ContinueOnError)
 	txFile := fs.String("transactions", "", "Monarch transactions CSV")
 	balFile := fs.String("balances", "", "Monarch balances CSV (optional)")
-	property := fs.String("property", "", `"<Monarch account name>=<Ada County parcel>" to import a home's value history`)
+	property := fs.String("property", "", `"<Monarch account name>=<county parcel number>" to import a home's value history`)
 	dry := fs.Bool("dry-run", false, "report what would change and roll back")
 	if err := fs.Parse(args[1:]); err != nil {
 		return true, err
@@ -208,7 +208,7 @@ func importMonarch(ctx context.Context, db *sql.DB, txs, bals []map[string]strin
 		if _, err := tx.ExecContext(ctx, `INSERT INTO items(id) VALUES('manual') ON CONFLICT DO NOTHING`); err != nil {
 			return r, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO accounts(id,item_id,institution,name,guessed_type,guess_confident,parcel) VALUES($1,'manual','Ada County Assessor',$2,'property',true,$3)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO accounts(id,item_id,institution,name,guessed_type,guess_confident,parcel) VALUES($1,'manual','County Assessor',$2,'property',true,$3)
 			ON CONFLICT(id) DO UPDATE SET name=excluded.name,parcel=excluded.parcel`, propID, propName, parcel); err != nil {
 			return r, err
 		}
