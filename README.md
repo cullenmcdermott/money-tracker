@@ -115,6 +115,14 @@ Requests are batched, up to 20 questions each. Exactly what is sent:
 
 Never sent: balances, amounts for accounts, transaction ids or dates. Errors and timeouts are logged without the key and never break suggestions or sync.
 
+## Holdings and allocation
+
+For brokerages that send holdings through SimpleFIN, the Investments page lists each account's latest positions with their value and, where the brokerage sends a cost basis, the unrealized gain. A cost of zero or none counts as unknown (money market funds often report zero), and those positions are left out of the gain with their value noted. Unvested stock awards (zero shares with a value, described as restricted stock or RSUs) are listed apart as an estimate and left out of net worth, gains and allocation.
+
+Allocation splits holdings into US stock, international stock, bonds, cash and other. A split comes from, in order: one you set on the Investments page; a money market fund (cash); or a lookup of the fund's latest SEC N-PORT filing, refreshed every 120 days. A company's own stock counts as 100% US stock until you override it. Funds that don't file with the SEC, like most 401(k) collective trusts, stay unclassified until you set a split. A split you set doesn't follow a target-date fund's glide path.
+
+SEC lookups are off unless `SEC_USER_AGENT` is set to your name and email, which the SEC requires of every client. Then, after each sync, the app downloads the SEC's public ticker lists (once a day) and the filings of held funds with no recent split. Only fund tickers and series ids are sent, at most 5 requests a second. Lookups tell the SEC which funds someone holds, which is why they are opt-in.
+
 ## Backups
 
 Every night at `BACKUP_TIME`, and on demand from Settings, the server writes `BACKUP_DIR/money-YYYYMMDDTHHMMSSZ.tar.gz`. It contains a consistent CSV dump of every table and a manifest with the schema version. Only the newest `BACKUP_KEEP` are kept, and Settings warns if the last good backup is more than 36 hours old.
@@ -159,6 +167,7 @@ money-tracker import-monarch --transactions Transactions.csv --balances Balances
 | `JEV_MIN_CONFIDENCE` | `0.5` | |
 | `JEV_MODEL`, `JEV_URL` | `jev-latest`, TypeSafe's endpoint | |
 | `JEV_PRICE_INPUT_PER_MTOK`, `JEV_PRICE_OUTPUT_PER_MTOK` | `0.042`, `0` | Used for the cost estimate in Settings. |
+| `SEC_USER_AGENT` | unset | Your name and email, e.g. `Jane Doe jane@example.com`. Turns on SEC fund lookups (see [Holdings and allocation](#holdings-and-allocation)). |
 
 ## Releases
 

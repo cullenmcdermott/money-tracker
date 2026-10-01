@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -26,6 +28,62 @@ func (a *app) investmentRoutes(mux *http.ServeMux) {
 		}
 		jsonResponse(w, 200, out)
 	})
+	// The owner's split for a symbol, as five whole percentages (US stock, international stock, bonds, cash,
+	// other) totalling 100. It replaces any SEC split and is never looked up again until cleared.
+	mux.HandleFunc("PUT /api/fund-classes/{symbol}", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Split [5]int `json:"split"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		sum := 0
+		for _, v := range body.Split {
+			if v < 0 {
+				sum = -1
+				break
+			}
+			sum += v
+		}
+		if sum != 100 {
+			jsonResponse(w, 400, map[string]string{"error": "Make the percentages total 100."})
+			return
+		}
+		s := body.Split
+		_, err := a.db.ExecContext(r.Context(), `INSERT INTO fund_classes(symbol,us_stock,intl_stock,bonds,cash,other,source) VALUES($1,$2,$3,$4,$5,$6,'owner')
+			ON CONFLICT(symbol) DO UPDATE SET us_stock=$2,intl_stock=$3,bonds=$4,cash=$5,other=$6,source='owner',as_of='',saved_at=now()`,
+			r.PathValue("symbol"), s[0]*100, s[1]*100, s[2]*100, s[3]*100, s[4]*100)
+		if err != nil {
+			apiError(w, err)
+			return
+		}
+		jsonResponse(w, 200, map[string]bool{"saved": true})
+	})
+	mux.HandleFunc("DELETE /api/fund-classes/{symbol}", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := a.db.ExecContext(r.Context(), `DELETE FROM fund_classes WHERE symbol=$1 AND source='owner'`, r.PathValue("symbol")); err != nil {
+			apiError(w, err)
+			return
+		}
+		jsonResponse(w, 200, map[string]bool{"saved": true})
+	})
+}
+
+func (a *app) fundClasses(ctx context.Context) (map[string]fundClass, error) {
+	out := map[string]fundClass{}
+	rows, err := a.db.QueryContext(ctx, `SELECT symbol,us_stock,intl_stock,bonds,cash,other,source,as_of,saved_at FROM fund_classes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sym string
+		var c fundClass
+		if err := rows.Scan(&sym, &c.Split[0], &c.Split[1], &c.Split[2], &c.Split[3], &c.Split[4], &c.Source, &c.AsOf, &c.saved); err != nil {
+			return nil, err
+		}
+		out[sym] = c
+	}
+	return out, rows.Err()
 }
 
 type investmentAccount struct {
@@ -38,6 +96,16 @@ type investmentAccount struct {
 	Dividends   int64   `json:"dividends"`
 	Market      int64   `json:"market"`
 	Months      []month `json:"months"`
+	// Latest synced holdings (none when the brokerage sends none). Cost and Gain sum the positions with a
+	// known cost; NoCost is the value of those without. Unvested awards are kept apart from all of these.
+	Positions  []position `json:"positions,omitempty"`
+	Cost       int64      `json:"cost"`
+	Gain       int64      `json:"unrealized"` // "gain" is taken by the page for dividends plus market change
+	NoCost     int64      `json:"no_cost"`
+	Unvested   int64      `json:"unvested"`
+	UnvestedN  int        `json:"unvested_count"`
+	HoldingsAt string     `json:"holdings_at,omitempty"`
+	Allocation allocation `json:"allocation"`
 }
 
 type month struct {
@@ -142,5 +210,64 @@ func (a *app) investments(ctx context.Context, period string) (map[string]any, e
 			ia.Months = append(ia.Months, month{m.Format("2006-01"), b, cum})
 		}
 	}
-	return map[string]any{"period": period, "from": fromS, "to": endS, "accounts": list}, nil
+	portfolio, err := a.addPositions(ctx, list)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"period": period, "from": fromS, "to": endS, "accounts": list, "allocation": portfolio}, nil
+}
+
+// addPositions fills each account's holdings, largest first, its cost, gain and unvested totals and its
+// allocation, and returns the allocation of all of them together.
+func (a *app) addPositions(ctx context.Context, list []investmentAccount) (allocation, error) {
+	var all allocation
+	idx := map[string]*investmentAccount{}
+	for i := range list {
+		idx[list[i].ID] = &list[i]
+	}
+	classes, err := a.fundClasses(ctx)
+	if err != nil {
+		return all, err
+	}
+	now := time.Now()
+	rows, err := a.db.QueryContext(ctx, `SELECT account_id,raw,to_char(synced_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM holdings `)
+	if err != nil {
+		return all, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, at string
+		var raw []byte
+		if err := rows.Scan(&id, &raw, &at); err != nil {
+			return all, err
+		}
+		ia := idx[id]
+		if ia == nil {
+			continue
+		}
+		p, ok := parseHolding(raw)
+		if !ok {
+			continue
+		}
+		ia.HoldingsAt = at
+		switch {
+		case p.Unvested:
+			ia.Unvested += p.Value
+			ia.UnvestedN++
+			continue
+		case p.Cost != nil:
+			ia.Cost += *p.Cost
+			ia.Gain += p.Value - *p.Cost
+		default:
+			ia.NoCost += p.Value
+		}
+		p.Class = classify(p, classes, now)
+		ia.Allocation.add(p.Value, p.Class)
+		all.add(p.Value, p.Class)
+		ia.Positions = append(ia.Positions, p)
+	}
+	for _, ia := range idx {
+		slices.SortStableFunc(ia.Positions, func(x, y position) int { return cmp.Compare(y.Value, x.Value) })
+	}
+	return all, rows.Err()
 }

@@ -39,6 +39,7 @@ func seedBackup(t *testing.T, db *sql.DB) {
 		`INSERT INTO merchants(key,display_name,merged_into,category) VALUES('coffee','Coffee','','Dining')`,
 		`INSERT INTO alerts(kind,key,transaction_id,reasons,dismissed_at) VALUES('new_merchant','t1','t1','["First charge"]',now()),('pace','2026-09:Dining',NULL,'["over 50% above usual"]',NULL)`,
 		`INSERT INTO merchant_locations(merchant_key,base,source) VALUES('coffee',true,'owner')`,
+		`INSERT INTO fund_classes(symbol,us_stock,bonds,source,as_of) VALUES('ABCDX',6000,4000,'sec','2026-06-30')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)

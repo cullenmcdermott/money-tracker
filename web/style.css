@@ -434,3 +434,19 @@ a.btn{text-decoration:none}
 .abar b{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--ink2)}
 .asec{font-size:16px;color:var(--ink2);margin:8px 0 10px}
 @media (max-width:820px){.agrid{grid-template-columns:minmax(0,1fr)}.acard{padding:16px}}
+
+/* Holdings */
+.allocbar{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--panel2);gap:2px}
+.allocbar i{display:block;min-width:3px}
+.alleg{margin-top:10px;flex-wrap:wrap;gap:6px 18px}
+.alleg b{font-weight:600}
+.hold{border-top:1px solid var(--line2)}
+.hold:first-of-type{border-top:0}
+.hold summary{display:flex;gap:8px;align-items:baseline;padding:12px 0;cursor:pointer;flex-wrap:wrap}
+.hold summary .hv{margin-left:auto;font-weight:600}
+.htbl td small{font-size:12px}
+.clsform{padding:8px 0}
+.clsin{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:8px 0}
+.clsin label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--ink2)}
+.clsin input{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font:inherit}
+@media (max-width:820px){.clsin{grid-template-columns:repeat(2,minmax(0,1fr))}}

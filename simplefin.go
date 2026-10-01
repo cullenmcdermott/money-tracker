@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -118,6 +119,9 @@ func (a *app) syncSimplefin(ctx context.Context) error {
 		a.jevAccountTypes(ctx) // best effort: failures are logged and never fail the sync
 		a.simplefin.progress.set("Checking for charges worth a look", 0, 0)
 		a.alertsAfterSync(ctx) // best effort too
+		if err := a.fundLookups(ctx); err != nil {
+			log.Printf("sec: %v", err) // best effort: held funds stay unclassified
+		}
 	}
 	return err
 }

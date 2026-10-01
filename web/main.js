@@ -679,7 +679,7 @@ function alerts() {
 /* ---------- Investments (#investments): where each investment account's change came from ---------- */
 // INV.data: last GET /investments for INV.period. Added = transfers in, payroll, conversions and share sales;
 // market change = end - start - added - dividends (computed by the server).
-const INV = { period: 'ytd', kind: 'all', chart: 'stack', hidden: new Set(), sort: 'end', dir: -1, data: null, err: '' }
+const INV = { period: 'ytd', kind: 'all', chart: 'stack', hidden: new Set(), sort: 'end', dir: -1, data: null, err: '', open: new Set(), classing: null, form: [], formErr: '' }
 const INV_COLORS = ['var(--income)', 'var(--cat-x2)', 'var(--cat-transportation)', 'var(--cat-housing)', 'var(--cat-x0)', 'var(--cat-x1)', 'var(--cat-x3)']
 const invKind = a => /ira|401|403|roth|hsa|pension/i.test(a.name) ? 'Retirement' : /espp|rsu/i.test(a.name) ? 'Equity comp' : 'Taxable'
 function loadInvestments() {
@@ -718,7 +718,54 @@ function investments() {
     <tbody>${rows.map(a => `<tr data-act="invrow" data-v="${esc(a.id)}" tabindex="0"><td><span class="invn"><i style="background:${a.color}"></i><span><b>${esc(a.name)}</b><br><small>${esc(a.institution)} · ${a.kind}</small></span></span></td>
       <td>${usd0(a.start)}</td><td>${sgn(a.added)}</td><td>${sgn(a.dividends)}</td><td class="${a.market >= 0 ? 'up' : 'down'}">${sgn(a.market)}</td><td>${pc(ret(a.gain, a))}</td><td><b>${usd0(a.end)}</b></td></tr>`).join('')}</tbody>
     <tfoot><tr><td>Total</td><td>${usd0(T.start)}</td><td>${sgn(T.added)}</td><td>${sgn(T.dividends)}</td><td class="${T.market >= 0 ? 'up' : 'down'}">${sgn(T.market)}</td><td>${pc(ret(T.gain, T))}</td><td>${usd0(T.end)}</td></tr></tfoot></table></div>
-    <p class="cap">Return is dividends plus market change over the starting balance plus half of what you added: a simple estimate, not the time-weighted return your brokerage reports. Select a row to open the account.</p></section>`
+    <p class="cap">Return is dividends plus market change over the starting balance plus half of what you added: a simple estimate, not the time-weighted return your brokerage reports. Select a row to open the account.</p></section>
+  ${holdingsHTML(shown)}`
+}
+// Holdings: the allocation of the accounts shown, then each account's latest positions with gains where the
+// brokerage sent a cost, its unvested awards, and the owner's classification form for any symbol.
+const CLASSES = [['us_stock', 'US stock', 'var(--income)'], ['intl_stock', 'International stock', 'var(--cat-x2)'], ['bonds', 'Bonds', 'var(--cat-housing)'], ['cash', 'Cash', 'var(--kept)'], ['other', 'Other', 'var(--cat-other)']]
+const classLabel = c => {
+  if (!c) return '<span class="muted">Unclassified</span>'
+  const parts = c.split.map((bp, i) => [bp, CLASSES[i][1]]).filter(([bp]) => bp).sort((x, y) => y[0] - x[0])
+  const what = parts.length === 1 ? parts[0][1] : parts.map(([bp, l]) => `${Math.round(bp / 100)}% ${l.replace('International', 'intl.').replace(/^[BCO]/, c => c.toLowerCase())}`).join(', ')
+  const from = c.source === 'sec' ? `SEC filing ${dMed(c.as_of)}` : { owner: 'your split', stock: 'a company stock', money_market: 'a money market fund' }[c.source]
+  return `${what}<br><small class="muted">From ${from}</small>`
+}
+function holdingsHTML(list) {
+  const held = list.filter(a => a.positions?.length || a.unvested)
+  if (!held.length) return ''
+  const al = Object.fromEntries([...CLASSES.map(([k]) => k), 'unclassified'].map(k => [k, held.reduce((s, a) => s + a.allocation[k], 0)]))
+  const total = Object.values(al).reduce((s, v) => s + v, 0) || 1
+  const segs = [...CLASSES, ['unclassified', 'Unclassified', 'var(--line)']].filter(([k]) => al[k] > 0)
+  const unvested = held.reduce((s, a) => s + a.unvested, 0)
+  const table = a => {
+    const withCost = a.positions.some(p => p.cost != null)
+    const row = p => {
+      const sym = esc(p.symbol), editing = INV.classing === p.symbol && INV.classAcct === a.id
+      return `<tr><td><b>${sym || '—'}</b><br><small class="muted">${esc(clip(p.description, 48))}</small></td><td>${privacy.on ? '•••' : p.shares.toLocaleString('en-US', { maximumFractionDigits: 3 })}</td><td>${usd0(p.value)}</td>
+        ${withCost ? (p.cost == null ? '<td class="muted">Unknown</td><td></td>' : `<td>${usd0(p.cost)}</td><td class="${p.value >= p.cost ? 'up' : 'down'}">${(p.value >= p.cost ? '+' : '−') + usd0(Math.abs(p.value - p.cost))}</td>`) : ''}
+        <td>${classLabel(p.class)}${p.symbol && !editing ? ` <button class="linkbtn" data-act="classify" data-v="${sym}" data-a="${esc(a.id)}">${p.class?.source === 'owner' ? 'Change' : p.class ? 'Override' : 'Classify'}</button>` : ''}</td></tr>
+        ${editing ? `<tr><td colspan="${withCost ? 6 : 4}">${classForm(p)}</td></tr>` : ''}`
+    }
+    return `<details class="hold" ${INV.open.has(a.id) ? 'open' : ''} data-id="${esc(a.id)}"><summary><b>${esc(a.name)}</b> <span class="muted">${esc(a.institution)}</span><span class="hv">${usd0(a.positions.reduce((s, p) => s + p.value, 0))}</span></summary>
+      ${a.positions.length ? `<div class="tblwrap"><table class="invtbl htbl"><thead><tr><th>Holding</th><th>Shares</th><th>Value</th>${withCost ? '<th>Cost</th><th>Gain</th>' : ''}<th>Class</th></tr></thead><tbody>${a.positions.map(row).join('')}</tbody>
+      ${withCost ? `<tfoot><tr><td>Known cost</td><td></td><td>${usd0(a.cost + a.unrealized)}</td><td>${usd0(a.cost)}</td><td class="${a.unrealized >= 0 ? 'up' : 'down'}">${(a.unrealized >= 0 ? '+' : '−') + usd0(Math.abs(a.unrealized))}</td><td></td></tr></tfoot>` : ''}</table></div>` : ''}
+      <p class="cap">${withCost && a.no_cost ? `${usd0(a.no_cost)} has no known cost and is left out of the gain. ` : withCost ? '' : 'This brokerage sends no cost basis, so there are no gains to show. '}${a.unvested ? `<b>Unvested:</b> ${usd0(a.unvested)} in ${a.unvested_count} award${a.unvested_count === 1 ? '' : 's'}, an estimate at the price of the last sync, not in net worth, gains or allocation. ` : ''}As of ${rel(a.holdings_at)}.</p></details>`
+  }
+  return `<section class="panel" style="margin-top:16px"><div class="phead"><h2>Allocation</h2></div>
+    <div class="allocbar" role="img" aria-label="${segs.map(([k, l]) => `${l} ${pct(al[k] / total)}`).join(', ')}">${segs.map(([k, l, c]) => `<i style="width:${f1(al[k] / total * 100)}%;background:${c}" title="${l}"></i>`).join('')}</div>
+    <div class="legend alleg">${segs.map(([k, l, c]) => `<span><i style="background:${c}"></i>${l} <b>${pct(al[k] / total)}</b> <span class="muted">${usd0(al[k])}</span></span>`).join('')}</div>
+    <p class="cap">Latest holdings of the accounts shown.${unvested ? ` Unvested awards (${usd0(unvested)}) are left out.` : ''}${al.unclassified ? ' Classify the unclassified holdings below to complete it.' : ''}${D.config.fund_lookups ? '' : ' Fund lookups are off, so funds need your own split (see Settings).'}</p></section>
+  <section class="panel" style="margin-top:16px"><div class="phead"><h2>Holdings</h2></div>${held.map(table).join('')}
+    <p class="cap">Gain is value minus what the brokerage reports you paid: unrealized, before tax, and only where a cost was sent.</p></section>`
+}
+function classForm(p) {
+  const v = INV.form
+  return `<form class="clsform" data-cls="${esc(p.symbol)}"><p><b>Split for ${esc(p.symbol)}</b>, in percent. It must total 100.</p>
+    <div class="clsin">${CLASSES.map(([k, l], i) => `<label>${l}<input type="number" min="0" max="100" step="1" name="${k}" value="${v[i]}" inputmode="numeric"></label>`).join('')}</div>
+    <p class="cap">A target-date fund moves toward bonds over time; a split you set here stays as you set it.</p>
+    ${INV.formErr ? `<p class="warn" role="alert">${esc(INV.formErr)}</p>` : ''}
+    <div class="frow"><button class="btn sm">Save</button><button type="button" class="btn ghost sm" data-act="classcancel">Cancel</button>${p.class?.source === 'owner' ? `<button type="button" class="btn ghost sm" data-act="classclear" data-v="${esc(p.symbol)}">Clear my split</button>` : ''}</div></form>`
 }
 function invChart(list) {
   if (!list.length) return '<div class="empty">No accounts shown. Turn one back on in the legend.</div>'
@@ -769,6 +816,7 @@ function settings() {
   ${backupsSection()}
   <section class="panel sec"><h2>Merchants</h2><p class="muted" style="font-size:13.5px">Rename merchants and merge duplicates, like a store that shows up under several names.</p><div class="frow"><a class="btn ghost" href="#merchants">Manage merchants ${icon('arrow', 16)}</a></div></section>
   <section class="panel sec"><h2>Smart suggestions (Jev)</h2><p class="muted" style="font-size:13.5px"><strong>${D.config.jev_enabled ? 'On' : 'Off'}</strong>${D.config.jev_enabled ? ` · ${D.config.jev_merchants} merchant${D.config.jev_merchants === 1 ? '' : 's'} scored and saved` : ''}. ${jevUsageLine()}${D.config.jev_enabled ? 'Merchants and accounts the local rules cannot place are sent to Jev: name, bank descriptions, typical amount, and income or spending; for accounts, institution, name, and balance sign; for alerts, the charge’s description, amount and reasons, card or bank account, your usual state and top categories.' : 'Set <code>JEV_API_KEY</code> and restart to turn it on. Nothing is sent to Jev while it is off.'}</p></section>
+  <section class="panel sec"><h2>Fund lookups</h2><p class="muted" style="font-size:13.5px"><strong>${D.config.fund_lookups ? 'On' : 'Off'}</strong>. ${D.config.fund_lookups ? 'After each sync, held fund tickers with no recent split are looked up in the SEC’s public fund filings to split them into stocks, bonds and cash. Only the tickers are sent.' : 'Set <code>SEC_USER_AGENT</code> (your name and email, which the SEC requires) and restart to classify funds from their SEC filings. Until then, set a split for each fund on the Investments page.'}</p></section>
   <section class="panel sec"><h2>Appearance</h2><div class="seg themeseg" role="group" aria-label="Theme">${['system', 'light', 'dark'].map(t => `<button data-act="themeset" data-v="${t}" aria-pressed="${state.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></section>`
 }
 // Jev usage in Settings: requests and tokens for the last 30 days and all time, with the estimated cost (never masked by privacy mode).
@@ -1120,7 +1168,16 @@ document.addEventListener('change', e => {
   else if (t.name === 'mtarget') { M.mg.target = t.value; paintMerge(); $('#mdlg input:checked')?.focus() }
 })
 document.addEventListener('input', e => { if (e.target.id === 'mq') { M.q = e.target.value; paintMerchants() } })
+document.addEventListener('toggle', e => { const id = e.target.matches?.('details.hold') && e.target.dataset.id; if (id) e.target.open ? INV.open.add(id) : INV.open.delete(id) }, true)
 document.addEventListener('submit', e => {
+  const f = e.target
+  if (f.dataset.cls !== undefined) {
+    e.preventDefault()
+    INV.form = CLASSES.map(([k]) => +f.elements[k].value || 0)
+    if (INV.form.reduce((s, v) => s + v, 0) !== 100 || INV.form.some(v => v < 0 || !Number.isInteger(v))) { INV.formErr = 'Make the percentages whole numbers that total 100.'; render(); return }
+    send('PUT', '/fund-classes/' + encodeURIComponent(f.dataset.cls), { split: INV.form }).then(() => { INV.classing = null; INV.data = null }, e => { INV.formErr = e.message }).finally(render)
+    return
+  }
   if (e.target.dataset.mren === undefined) return
   e.preventDefault(); renameMerchant(e.target.dataset.mren, $('#mrn').value)
 })
@@ -1197,6 +1254,12 @@ document.addEventListener('click', e => {
   else if (a === 'invh') { INV.hidden.has(d.v) ? INV.hidden.delete(d.v) : INV.hidden.add(d.v); render() }
   else if (a === 'invs') { if (INV.sort === d.v) INV.dir *= -1; else { INV.sort = d.v; INV.dir = d.v === 'name' ? 1 : -1 } render() }
   else if (a === 'invrow') { go('accounts'); openAccount(d.v) }
+  else if (a === 'classify') {
+    const p = INV.data.accounts.find(x => x.id === d.a).positions.find(x => x.symbol === d.v)
+    Object.assign(INV, { classing: d.v, classAcct: d.a, formErr: '', form: p.class ? p.class.split.map(bp => Math.round(bp / 100)) : [0, 0, 0, 0, 0] }); render(); $('.clsform input')?.focus()
+  }
+  else if (a === 'classcancel') { INV.classing = null; render() }
+  else if (a === 'classclear') send('DELETE', '/fund-classes/' + encodeURIComponent(d.v)).then(() => { INV.classing = null; INV.data = null }, e => { INV.formErr = e.message }).finally(render)
   else if (a === 'flowless') { state.flowAll = false; render() }
   else if (a === 'privacy') { privacy.on = !privacy.on; try { localStorage.setItem('privacy', privacy.on ? '1' : '0') } catch { /* storage blocked */ } render() }
   else if (a === 'theme') setTheme({ system: 'light', light: 'dark', dark: 'system' }[state.theme])

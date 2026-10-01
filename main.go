@@ -169,7 +169,7 @@ func (a *app) routes() http.Handler {
 			apiError(w, err)
 			return
 		}
-		jsonResponse(w, 200, map[string]any{"simplefin_configured": a.simplefin.accessURL != "", "jev_enabled": a.jev != nil, "jev_merchants": jevMerchants, "jev_usage": usage})
+		jsonResponse(w, 200, map[string]any{"simplefin_configured": a.simplefin.accessURL != "", "jev_enabled": a.jev != nil, "fund_lookups": os.Getenv("SEC_USER_AGENT") != "", "jev_merchants": jevMerchants, "jev_usage": usage})
 	})
 	mux.HandleFunc("POST /api/sync", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.syncNow(r.Context()); err != nil {
