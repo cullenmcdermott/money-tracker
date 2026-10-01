@@ -798,6 +798,173 @@ function invChart(list) {
   return `<svg class="invchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Investment balances over time">${g}</svg>`
 }
 
+/* ---------- Plan (#plan): a forecast in today's dollars from the owner's own numbers, what-ifs, goals ---------- */
+// PL.data: GET /plan (doc = what's saved, baseline = what the data says, defaults, projection, data_projection).
+// PL.vals: the doc being tried. Every change is a what-if (POST /plan/projection) until Keep saves it.
+const PL = { data: null, err: '', vals: null, proj: null, goals: null, ev: null, goal: null, gErr: '', timer: 0, seq: 0, busy: false }
+const blankEv = () => ({ kind: 'expense', name: '', year: '', amount: '', until: '' })
+const clone = o => JSON.parse(JSON.stringify(o))
+const isObj = v => v && typeof v === 'object' && !Array.isArray(v)
+// Key order, unset keys and empty objects don't matter when comparing docs.
+const canon = o => JSON.stringify(o, (k, v) => isObj(v) ? Object.fromEntries(Object.entries(v).filter(([, x]) => x != null && !(isObj(x) && !Object.keys(x).length)).sort()) : v)
+const r10k = c => privacy.on ? '$•••' : c >= 99500000 ? '$' + (Math.round(c / 1e7) / 10).toFixed(1) + 'M' : '$' + Math.round(c / 1e6) * 10 + 'k'
+function setPlan(p) { PL.data = p; PL.vals = p.doc ? clone(p.doc) : null; PL.proj = null; PL.ev = PL.ev || blankEv() }
+function loadPlan() {
+  if (inflight.has('plan')) return
+  inflight.add('plan'); PL.err = ''
+  Promise.all([api('/plan'), api('/goals')]).then(([p, g]) => { setPlan(p); PL.goals = g }, e => { PL.err = e.message }).finally(() => { inflight.delete('plan'); if (state.view === 'plan') render() })
+}
+const planDirty = () => PL.vals && canon(PL.vals) !== canon(PL.data.doc)
+// The numbers anyone can change, with where their starting value comes from.
+const KNOBS = [['retire_age', 'Retirement age', 'age'], ['income_monthly', 'Income a month', 'money'], ['spending_monthly', 'Spending a month', 'money'],
+  ['retire_extra', 'Extra spending a year once retired', 'money'], ['retire_spend_pct', 'Retirement spending, % of today’s', 'pct'], ['ss_monthly', 'Social Security a month', 'money'],
+  ['ss_age', 'Social Security from age', 'age'], ['inflation', 'Inflation', 'pct'], ['end_age', 'Plan until age', 'age']]
+const knobBase = k => ({ income_monthly: PL.data.baseline.income_monthly, spending_monthly: PL.data.baseline.spending_monthly })[k] ?? PL.data.defaults[k]
+const fromData = k => k === 'income_monthly' || k === 'spending_monthly'
+const showVal = (kind, v) => kind === 'money' ? usd0(v) : kind === 'pct' ? `${v}%` : String(v)
+// Set a what-if value; back at its starting value, the override goes away.
+function tryVal(obj, k, v, base) { if (v === base || v === '' || v == null) delete obj[k]; else obj[k] = v; planChanged() }
+function planChanged() {
+  clearTimeout(PL.timer)
+  if (!planDirty()) { PL.proj = null; PL.pending = false; PL.seq++; render(); return }
+  PL.pending = true; render()
+  const seq = ++PL.seq, body = clone(PL.vals)
+  PL.timer = setTimeout(() => send('POST', '/plan/projection', body).then(r => { if (seq === PL.seq) { PL.proj = r; PL.err = '' } }, e => { if (seq === PL.seq) PL.err = e.message }).finally(() => { if (seq === PL.seq) { PL.pending = false; if (state.view === 'plan') render() } }), 250)
+}
+function plan() {
+  const head = `${banner()}<div class="pagehead"><h1>Plan</h1></div>`
+  if (!PL.data) {
+    if (!PL.err) loadPlan()
+    return `${head}<section class="panel">${PL.err ? `<div class="empty"><p><strong>Could not load the plan</strong></p><p>${esc(PL.err)}</p><p><button class="btn ghost" data-act="planretry">Retry</button></p></div>` : '<div class="load" role="status">Loading…</div>'}</section>`
+  }
+  const D = PL.data, v = PL.vals
+  if (!v) return `${head}<section class="panel setup"><h2>One question first</h2>
+    <p>The forecast is built from your own income, spending, balances and contributions. It only needs your birth year to know how many years are ahead.</p>
+    <form class="frow" data-planform="setup"><label class="fl">Birth year<input id="birthyear" type="number" min="${new Date().getFullYear() - 110}" max="${new Date().getFullYear() - 18}" required inputmode="numeric"></label><button class="btn">Show my forecast</button></form>
+    ${PL.err ? `<p class="warn" role="alert">${esc(PL.err)}</p>` : ''}
+    <p class="cap">The rest starts from your data, or from defaults where there is none: retirement at ${D.defaults.retire_age}, Social Security of ${usd0(D.defaults.ss_monthly)} a month from ${D.defaults.ss_age}, a plan to age ${D.defaults.end_age}. You can change any of it.</p></section>`
+  const dirty = planDirty(), P = dirty && PL.proj ? PL.proj.projection : D.projection, Dp = dirty && PL.proj ? PL.proj.data_projection : D.data_projection
+  const changed = canon(v) !== canon({ birth_year: v.birth_year, events: v.events, vests: { off: v.vests?.off || undefined } })
+  const ra = v.retire_age ?? D.defaults.retire_age, end = v.end_age ?? D.defaults.end_age
+  const at = (p, age) => (p.years.find(y => y.age === age) || p.years.at(-1)).assets
+  const lasts = p => p.run_out ? `Runs out at ${p.run_out}` : `Past ${p.years.at(-1).age}`
+  const accts = D.baseline.accounts, acc = id => v.accounts?.[id] || {}
+  const included = accts.filter(a => acc(a.id).include ?? a.include), nowV = included.reduce((s, a) => s + Math.max(0, a.balance), 0)
+  const knob = ([k, label, kind]) => {
+    const base = knobBase(k), cur = v[k] ?? base, ch = v[k] != null && v[k] !== base, saved = D.doc[k] != null && D.doc[k] === v[k]
+    const src = fromData(k) ? `Average of your last ${D.baseline.months} month${D.baseline.months === 1 ? '' : 's'}` : 'Default'
+    const note = ch ? `${saved ? 'Set by you.' : `Trying ${showVal(kind, cur)}.`} ${fromData(k) ? 'Your data' : 'Default'}: ${showVal(kind, base)}. <button class="linkbtn" data-act="knobreset" data-v="${k}">Use ${fromData(k) ? 'my data' : 'the default'}</button>` : src + '.'
+    const input = privacy.on && kind === 'money' ? '<span class="muted">$•••</span>'
+      : k === 'retire_age' ? `<input id="kn-${k}" type="range" min="40" max="80" step="1" value="${cur}" data-knob="${k}" data-kind="${kind}">`
+      : `<input id="kn-${k}" type="number" step="${kind === 'money' ? 100 : kind === 'pct' ? 0.5 : 1}" value="${kind === 'money' ? Math.round(cur / 100) : cur}" data-knob="${k}" data-kind="${kind}" inputmode="decimal">`
+    return `<div class="knob${k === 'retire_age' ? ' wide' : ''}${ch ? ' chg' : ''}"><label for="kn-${k}">${label}${k === 'retire_age' ? `: <b id="ra-v">${cur}</b>` : ''}</label>${input}<div class="src">${note}</div></div>`
+  }
+  const evs = [...(v.events || []).map((e, i) => ({ ...e, i })), ...[[ra, `Retire at ${ra}`], [v.ss_age ?? D.defaults.ss_age, `Social Security, ${usd0(v.ss_monthly ?? D.defaults.ss_monthly)} a month`], [end, `End of plan at ${end}`]].map(([age, text]) => ({ year: v.birth_year + age, text, fixed: true }))]
+    .sort((a, b) => a.year - b.year)
+  const evText = e => e.fixed ? e.text : `${esc(e.name)}: ${e.kind === 'expense' ? `one-time expense of ${usd0(e.amount)}` : e.kind === 'income' ? `one-time income of ${usd0(e.amount)}`
+    : `${e.kind === 'spending' ? 'spending' : 'income'} ${e.amount < 0 ? 'down' : 'up'} ${usd0(Math.abs(e.amount))} a year${e.until ? ` until ${e.until}` : ''}`}`
+  const vestOn = !v.vests?.off && D.baseline.unvested > 0
+  const E = PL.ev
+  return `${head}
+  <p class="sub">In today's dollars. Every number starts from your last ${D.baseline.months} months, your balances and your contributions, and you can try others below.${PL.pending ? ' <span role="status">Updating…</span>' : ''}</p>
+  ${PL.err ? notice(PL.err) : ''}
+  <section class="panel${PL.pending ? ' stale' : ''}">
+    <p class="lead">${changed ? 'With your changes, retiring' : 'Retiring'} at ${ra}, you’d have about ${r10k(at(P, ra))} then. <span class="${P.run_out ? 'down' : ''}">${P.run_out ? `The money runs out at ${P.run_out}.` : `It lasts past ${end}.`}</span></p>
+    ${changed ? `<p class="was">From your data alone: about ${r10k(at(Dp, D.defaults.retire_age))} at ${D.defaults.retire_age}, and ${Dp.run_out ? `it runs out at ${Dp.run_out}` : `it lasts past ${Dp.years.at(-1).age}`}.</p>` : ''}
+    <div class="pstats">
+      <div><span>Included assets now</span><b>${r10k(nowV)}</b></div>
+      <div><span>At retirement (${ra})</span><b>${r10k(at(P, ra))}</b>${changed ? `<small>Your data: ${r10k(at(Dp, D.defaults.retire_age))}</small>` : ''}</div>
+      <div><span>At end of plan (${end})</span><b>${P.run_out ? usd0(0) : r10k(P.years.at(-1).assets)}</b>${changed ? `<small>Your data: ${Dp.run_out ? usd0(0) : r10k(Dp.years.at(-1).assets)}</small>` : ''}</div>
+      <div><span>Money lasts</span><b>${lasts(P)}</b>${changed ? `<small>Your data: ${lasts(Dp)}</small>` : ''}</div>
+    </div>
+    ${planChart(P, changed ? Dp : null, ra, v)}
+    <div class="legend"><span><i style="background:var(--income)"></i>${changed ? (dirty ? 'With your changes (not saved)' : 'Your plan') : 'From your data'}</span>${changed ? '<span><i class="dash"></i>From your data</span>' : ''}<span>Shaded: retirement</span><span style="color:var(--spend)">Events</span><span style="color:var(--cat-x2)">Goals</span></div>
+    <p class="note">A direction, not a prediction: today's dollars, steady growth with no market swings, and flat tax rates (taxable 12%, pre-tax 20%, Roth 0%, plus 10% on pre-tax and Roth before 59½).</p>
+  </section>
+  <section class="panel" style="margin-top:16px"><div class="phead"><h2>Your numbers</h2>
+    ${dirty ? `<div class="frow" style="margin:0"><button class="btn" data-act="plankeep" ${PL.busy ? 'disabled' : ''}>Keep these changes</button><button class="btn ghost" data-act="planundo">Undo changes</button></div>` : changed ? '<button class="linkbtn" data-act="planalldata">Use all my data again</button>' : ''}</div>
+    <p class="cap" style="margin:0 0 6px">Filled in from your data, or a default where there is none. Change any to try a different plan; the chart compares it with your data. Nothing is saved until you keep the changes.${privacy.on ? ' Amounts are hidden; show them to change these.' : ''}</p>
+    <div class="knobs">${KNOBS.map(knob).join('')}
+      <div class="knob wide${v.surplus_account ? ' chg' : ''}"><label for="kn-surplus">Money left over each year goes to</label><select id="kn-surplus" data-surplus>${[['', 'Extra savings (grows 2% a year)'], ...included.map(a => [a.id, a.name])].map(([id, n]) => `<option value="${esc(id)}" ${(v.surplus_account || '') === id ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><div class="src">${v.surplus_account ? 'Set by you. Default: Extra savings.' : 'Default.'}</div></div></div>
+  </section>
+  ${goalsHTML(v)}
+  <section class="panel" style="margin-top:16px">
+    <details class="psec" ${PL.open?.accounts ? 'open' : ''} data-sec="accounts"><summary>Accounts <span class="muted">${included.length} included</span></summary>
+      <div class="tblwrap"><table class="invtbl ptbl"><thead><tr><th>Account</th><th>In plan</th><th>Kind</th><th>Growth</th><th>Added a year</th><th>Balance</th></tr></thead><tbody>
+      ${accts.map(a => { const o = acc(a.id), on = o.include ?? a.include, ch = ['include', 'bucket', 'growth', 'contribution'].some(f => o[f] != null)
+        return `<tr class="${ch ? 'chg' : ''}"><td><b>${esc(a.name)}</b><br><small class="muted">${esc(a.institution)}${ch ? ` · changed <button class="linkbtn" data-act="acctreset" data-v="${esc(a.id)}">use my data</button>` : ''}</small></td>
+          <td><input type="checkbox" id="pa-${esc(a.id)}-include" data-acct="${esc(a.id)}" data-f="include" ${on ? 'checked' : ''} aria-label="Include ${esc(a.name)}"></td>
+          <td><select id="pa-${esc(a.id)}-bucket" data-acct="${esc(a.id)}" data-f="bucket" aria-label="Kind of ${esc(a.name)}">${[['cash', 'Cash'], ['taxable', 'Taxable'], ['pretax', 'Pre-tax'], ['roth', 'Roth']].map(([b, l]) => `<option value="${b}" ${(o.bucket ?? a.bucket) === b ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+          <td><input type="number" step="0.5" class="pnum" id="pa-${esc(a.id)}-growth" data-acct="${esc(a.id)}" data-f="growth" value="${o.growth ?? a.growth}" aria-label="Growth of ${esc(a.name)}, % a year">%</td>
+          <td>${privacy.on ? '$•••' : `<input type="number" step="500" class="pnum" id="pa-${esc(a.id)}-contribution" data-acct="${esc(a.id)}" data-f="contribution" value="${Math.round((o.contribution ?? a.contribution) / 100)}" aria-label="Added to ${esc(a.name)} a year, dollars">`}</td>
+          <td>${usd0(a.balance)}</td></tr>` }).join('')}</tbody></table></div>
+      <p class="cap">Added a year starts from deposits from outside your accounts in the last ${D.baseline.months} months (payroll, vests); transfers from your own accounts are already part of your surplus. Growth is before inflation. Cards, loans and property are left out unless you include them.</p></details>
+    <details class="psec" ${PL.open?.events ? 'open' : ''} data-sec="events"><summary>Events <span class="muted">${evs.length + (vestOn ? 1 : 0)} in the plan</span></summary>
+      ${evs.map(e => `<div class="pev"><span class="y">${e.year}</span><span class="d">${evText(e)}</span>${e.fixed ? '<span class="muted" style="font-size:12px">Set in your numbers</span>' : `<button class="linkbtn" data-act="evedit" data-i="${e.i}">Edit</button><button class="linkbtn" data-act="evdel" data-i="${e.i}">Remove</button>`}</div>`).join('')}
+      ${D.baseline.unvested > 0 ? `<div class="pev"><span class="y">${new Date().getFullYear()}</span><span class="d">${vestOn ? `Unvested stock, ${usd0(D.baseline.unvested)} at the last sync, paid out over ${v.vests?.years ?? D.defaults.vest_years} years at ${v.vests?.after_tax_pct ?? D.defaults.vest_after_tax_pct}% after tax` : '<span class="muted">Unvested stock is left out</span>'}</span><button class="linkbtn" data-act="vests">${vestOn ? 'Leave out' : 'Add back'}</button></div>` : ''}
+      <form class="evform" data-planform="event">
+        <label>Kind<select name="kind">${[['expense', 'One-time expense'], ['income', 'One-time income'], ['spending', 'Spending change a year'], ['earning', 'Income change a year']].map(([k, l]) => `<option value="${k}" ${E.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>Name<input name="name" value="${esc(E.name)}" placeholder="New roof" maxlength="80" required></label>
+        <label>Year<input name="year" type="number" value="${E.year}" min="${new Date().getFullYear()}" required></label>
+        <label>Amount, $<input name="amount" type="number" step="100" value="${E.amount}" required></label>
+        <label>Until (optional)<input name="until" type="number" value="${E.until}"></label>
+        <button class="btn ghost">${E.editing != null ? 'Save event' : 'Add event'}</button></form>
+      <p class="cap">A yearly change can be negative, like a mortgage paid off. Events are part of the what-if too until you keep the changes.</p></details>
+    <details class="psec" ${PL.open?.years ? 'open' : ''} data-sec="years"><summary>Year by year <span class="muted">${P.years.length} years</span></summary>
+      <div class="tblwrap"><table class="invtbl ptbl"><thead><tr><th>Year</th><th>Age</th><th>Income</th><th>Spending</th><th>Withdrawn</th><th>Tax</th><th>Assets</th></tr></thead><tbody>
+      ${P.years.map(y => `<tr class="${y.shortfall ? 'short' : ''}"><td>${y.year}</td><td>${y.age}</td><td>${usd0(y.income)}</td><td>${usd0(y.spending)}</td><td>${y.withdrawn ? usd0(y.withdrawn) : '—'}</td><td>${y.taxes ? usd0(y.taxes) : '—'}</td><td>${y.shortfall ? `<span class="down">${usd0(-y.shortfall)}</span>` : usd0(y.assets)}</td></tr>`).join('')}</tbody></table></div></details>
+  </section>`
+}
+// Included assets by age: the plan as a line and area, the data-only plan dashed, retirement shaded,
+// events (orange) and dated goals (purple) as markers.
+function planChart(P, Dp, ra, v) {
+  const W = 760, H = 270, L = 56, R = 752, T = 18, B = 240, y0 = P.years[0].age, y1 = P.years.at(-1).age
+  const hi = Math.max(1, ...P.years.map(y => y.assets), ...(Dp ? Dp.years.map(y => y.assets) : [])) / 100 * 1.08, step = niceStep(hi, 4), top = Math.ceil(hi / step) * step
+  const x = age => L + (R - L) * (age - y0) / Math.max(1, y1 - y0), y = c => B - (B - T) * (c / 100) / top
+  const path = p => 'M' + p.years.map(r => `${f1(x(r.age))},${f1(y(r.assets))}`).join('L')
+  let g = ''
+  for (let val = 0; val <= top; val += step) g += `<line class="gridline" x1="${L}" x2="${R}" y1="${f1(y(val * 100))}" y2="${f1(y(val * 100))}"/><text x="${L - 8}" y="${f1(y(val * 100) + 4)}" text-anchor="end">${axis(val)}</text>`
+  for (let a = Math.ceil(y0 / 5) * 5; a <= y1; a += 5) g += `<text x="${f1(x(a))}" y="${H - 8}" text-anchor="middle">${a}</text>`
+  if (ra <= y1) g += `<rect x="${f1(x(Math.max(ra, y0)))}" y="${T - 8}" width="${f1(R - x(Math.max(ra, y0)))}" height="${B - T + 8}" style="fill:var(--panel2)"/>`
+  g += `<path d="${path(P)}L${f1(x(y1))},${B}L${f1(x(y0))},${B}Z" style="fill:var(--income)" opacity=".14"/>`
+  if (Dp) g += `<path d="${path(Dp)}" fill="none" style="stroke:var(--muted)" stroke-width="2" stroke-dasharray="6 5"/>`
+  g += `<path d="${path(P)}" fill="none" style="stroke:var(--income)" stroke-width="2.5"/>`
+  const marks = [...(v.events || []).map(e => [e.year - v.birth_year, e.name, 'var(--spend)']), ...(PL.goals || []).filter(gl => gl.target_date).map(gl => [+gl.target_date.slice(0, 4) - v.birth_year, gl.name, 'var(--cat-x2)'])]
+    .filter(([age]) => age >= y0 && age <= y1)
+  marks.forEach(([age, name, color], i) => { g += `<line x1="${f1(x(age))}" x2="${f1(x(age))}" y1="${T}" y2="${B}" style="stroke:${color}" stroke-dasharray="3 3"/><text x="${f1(x(age) + 4)}" y="${T + 12 + (i % 4) * 14}" style="fill:${color}">${esc(clip(name, 22))}</text>` })
+  if (P.run_out) g += `<circle cx="${f1(x(P.run_out))}" cy="${B}" r="5" style="fill:var(--err)"><title>Runs out at ${P.run_out}</title></circle>`
+  P.years.forEach(r => { g += `<rect x="${f1(x(r.age) - (R - L) / (y1 - y0 || 1) / 2)}" y="${T}" width="${f1((R - L) / (y1 - y0 || 1))}" height="${B - T}" fill="transparent"><title>${r.year}, age ${r.age}: ${usd0(r.assets)}${r.shortfall ? `, ${usd0(r.shortfall)} short` : ''}</title></rect>` })
+  return `<svg class="pchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Included assets by age, ${P.run_out ? `running out at ${P.run_out}` : `lasting past ${y1}`}">${g}</svg>`
+}
+function goalsHTML(v) {
+  const G = PL.goals || [], D = PL.data, f = PL.goal
+  const row = gl => {
+    const pace = gl.reached ? 'Reached' : gl.needed_monthly == null ? `${pct(gl.current / gl.target_amount)} there · no date set`
+      : `${gl.pace_monthly >= gl.needed_monthly ? 'On pace' : 'Behind'}: ${usd0(gl.pace_monthly)} a month over the last 6 months, ${usd0(gl.needed_monthly)} needed`
+    const cls = gl.reached || gl.needed_monthly == null ? '' : gl.pace_monthly >= gl.needed_monthly ? 'up' : 'behind'
+    return `<div class="goal"><div><b>${esc(gl.name)}</b><br><small class="muted">${gl.target_months ? `${gl.target_months} months of expenses` : 'Target'}${gl.target_date ? ` · by ${mName(gl.target_date)}` : ''} · ${gl.accounts.map(l => `${esc(l.name)}${l.pct < 100 ? ` ${l.pct}%` : ''}`).join(', ') || 'no accounts linked'}</small></div>
+      <div class="r"><b>${usd0(gl.current)}</b> <small class="muted">of ${usd0(gl.target_amount)}</small></div>
+      <div class="gtrack"><i style="width:${f1(Math.min(1, gl.current / gl.target_amount) * 100)}%"></i></div>
+      <div class="gpace ${cls}">${pace}</div><div class="r"><button class="linkbtn" data-act="goaledit" data-v="${gl.id}">Edit</button></div></div>`
+  }
+  const form = () => {
+    const links = Object.fromEntries((f.accounts || []).map(l => [l.account_id, l.pct]))
+    return `<form class="gform" data-planform="goal"><div class="frow" style="flex-wrap:wrap;align-items:end">
+      <label class="fl">Name<input name="name" value="${esc(f.name || '')}" maxlength="80" required></label>
+      <label class="fl">Target<select name="ttype"><option value="amount" ${f.target_months ? '' : 'selected'}>An amount</option><option value="months" ${f.target_months ? 'selected' : ''}>Months of expenses</option></select></label>
+      <label class="fl">Amount, $ or months<input name="tval" type="number" min="1" value="${f.target_months ?? (f.target ? f.target / 100 : '')}" required></label>
+      <label class="fl">By (optional)<input name="tdate" type="month" value="${f.target_date || ''}"></label></div>
+      <p class="cap">Linked accounts and the share of each that counts toward this goal:</p>
+      <div class="glinks">${D.baseline.accounts.filter(a => a.type === 'depository' || a.type === 'investment').map(a => `<label>${esc(a.name)}<span><input type="number" name="acct:${esc(a.id)}" min="0" max="100" value="${links[a.id] || ''}" placeholder="0">%</span></label>`).join('')}</div>
+      ${PL.gErr ? `<p class="warn" role="alert">${esc(PL.gErr)}</p>` : ''}
+      <div class="frow"><button class="btn">${f.id ? 'Save goal' : 'Add goal'}</button><button type="button" class="btn ghost" data-act="goalcancel">Cancel</button>${f.id ? `<button type="button" class="btn ghost" data-act="goaldel" data-v="${f.id}">Delete goal</button>` : ''}</div></form>`
+  }
+  return `<section class="panel" style="margin-top:16px"><div class="phead"><h2>Goals</h2>${f ? '' : '<button class="btn ghost sm" data-act="goalnew">Add a goal</button>'}</div>
+    ${G.length ? G.map(row).join('') : f ? '' : '<p class="muted">No goals yet. A goal tracks money set aside for something, like an emergency fund or a down payment, against the balances of the accounts you link to it.</p>'}
+    ${f ? form() : ''}
+    <p class="cap">Goals don't change the forecast; dated ones are marked on the chart. A target in months of expenses follows the plan's spending.</p></section>`
+}
+
 /* ---------- Settings ---------- */
 function settings() {
   const { sync } = state, conns = D.items
@@ -918,6 +1085,8 @@ document.addEventListener('change', e => {
   if (e.target.id !== 'bkfile' || !e.target.files[0]) return
   bk.confirm = { file: e.target.files[0] }; bk.msg = bk.fail = ''; render(); $('#bkconfirm')?.focus()
 })
+document.addEventListener('input', e => { if (e.target.id === 'kn-retire_age') $('#ra-v').textContent = e.target.value })
+document.addEventListener('toggle', e => { const sec = e.target.matches?.('details.psec') && e.target.dataset.sec; if (sec) (PL.open ||= {})[sec] = e.target.open }, true)
 document.addEventListener('input', e => { if (e.target.id === 'bkconfirm') $('#bkgo').disabled = e.target.value.trim().toLowerCase() !== 'restore' })
 
 /* ---------- Toast (shared, lives outside #main so re-renders never remove it) ---------- */
@@ -1171,6 +1340,26 @@ document.addEventListener('input', e => { if (e.target.id === 'mq') { M.q = e.ta
 document.addEventListener('toggle', e => { const id = e.target.matches?.('details.hold') && e.target.dataset.id; if (id) e.target.open ? INV.open.add(id) : INV.open.delete(id) }, true)
 document.addEventListener('submit', e => {
   const f = e.target
+  const pf = f.dataset.planform
+  if (pf) {
+    e.preventDefault()
+    const el = n => f.elements[n]?.value ?? ''
+    if (pf === 'setup') send('PUT', '/plan', { birth_year: +$('#birthyear').value }).then(p => { setPlan(p); PL.err = ''; return api('/goals').then(g => { PL.goals = g }) }, er => { PL.err = er.message }).finally(render)
+    else if (pf === 'event') {
+      const ev = { kind: el('kind'), name: el('name').trim(), year: +el('year'), amount: Math.round(+el('amount') * 100) }
+      if (el('until') && ev.kind !== 'expense' && ev.kind !== 'income') ev.until = +el('until')
+      const list = PL.vals.events ||= []
+      if (PL.ev.editing != null) list[PL.ev.editing] = ev; else list.push(ev)
+      list.sort((x, y) => x.year - y.year)
+      PL.ev = blankEv(); planChanged()
+    } else if (pf === 'goal') {
+      const months = el('ttype') === 'months', body = { name: el('name').trim(), target_date: el('tdate'), accounts: [] }
+      if (months) body.target_months = +el('tval'); else body.target = Math.round(+el('tval') * 100)
+      for (const inp of f.querySelectorAll('[name^="acct:"]')) if (+inp.value > 0) body.accounts.push({ account_id: inp.name.slice(5), pct: +inp.value })
+      send(PL.goal.id ? 'PUT' : 'POST', PL.goal.id ? '/goals/' + PL.goal.id : '/goals', body).then(() => api('/goals')).then(g => { PL.goals = g; PL.goal = null; PL.gErr = '' }, er => { PL.gErr = er.message }).finally(render)
+    }
+    return
+  }
   if (f.dataset.cls !== undefined) {
     e.preventDefault()
     INV.form = CLASSES.map(([k]) => +f.elements[k].value || 0)
@@ -1193,7 +1382,7 @@ document.addEventListener('keydown', e => {
 })
 
 /* ---------- shell ---------- */
-const VIEWS = [['overview', 'Overview'], ['transactions', 'Transactions'], ['accounts', 'Accounts'], ['investments', 'Investments'], ['spending', 'Spending'], ['settings', 'Settings']]
+const VIEWS = [['overview', 'Overview'], ['transactions', 'Transactions'], ['accounts', 'Accounts'], ['investments', 'Investments'], ['spending', 'Spending'], ['plan', 'Plan'], ['settings', 'Settings']]
 // Routes with no nav tab of their own; the tab of the view they belong to stays highlighted.
 const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'], alerts: ['transactions', 'Alerts'] }
 const validView = v => VIEWS.some(x => x[0] === v) || v in SUBVIEWS
@@ -1210,9 +1399,9 @@ function paintNav() {
   $('#privTop').setAttribute('aria-label', $('#privTop').title)
 }
 function render(top) {
-  const v = state.view, main = $('#main')
+  const v = state.view, main = $('#main'), fid = v === 'plan' && document.activeElement?.id
   if (!state.loaded) main.innerHTML = state.err ? `<div class="panel first"><h1>Could not load</h1><p>${esc(state.err)}</p><button class="btn" data-act="reload">Retry</button></div>` : '<div class="load" role="status">Loading…</div>'
-  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring, alerts }[v]()
+  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring, alerts, plan }[v]()
   paintNav()
   document.title = (VIEWS.find(x => x[0] === v)?.[1] || SUBVIEWS[v]?.[1] || 'Overview') + ' · Money Tracker'
   if (state.loaded && v === 'overview') { drawFlow(); drawNW(); drawCF(); const box = $('#flowbox'); if (box) flowEvents(box) }
@@ -1222,6 +1411,7 @@ function render(top) {
   if (state.loaded && v === 'review') loadReview()
   if (state.loaded && v === 'merchants') loadMerchants()
   if (top) window.scrollTo(0, 0)
+  if (fid) document.getElementById(fid)?.focus({ preventScroll: true })
 }
 function go(v) { if (location.hash === '#' + v) render(true); else location.hash = v }
 addEventListener('hashchange', () => { const v = location.hash.slice(1); state.view = validView(v) ? v : 'overview'; state.sel = null; state.editing = null; state.txMsg = null; render(true) })
@@ -1298,10 +1488,39 @@ document.addEventListener('click', e => {
   else if (a === 'ruleCancel') { state.ruleDel = null; render() }
   else if (a === 'ruleOk') { state.ruleDel = null; send('DELETE', '/rules/' + d.id).then(() => { D.rules = null; cache.clear(); state.perr = {}; render() }, e => { state.rulesErr = e.message; render() }) }
   else if (a === 'rulesretry') { state.rulesErr = ''; D.rules = null; render() }
+  else if (a === 'planretry') { PL.err = ''; render() }
+  else if (a === 'knobreset') { delete PL.vals[d.v]; planChanged() }
+  else if (a === 'acctreset') { delete PL.vals.accounts[d.v]; planChanged() }
+  else if (a === 'planalldata') { const v = PL.vals; PL.vals = { birth_year: v.birth_year, events: v.events, vests: v.vests }; planChanged() }
+  else if (a === 'planundo') { clearTimeout(PL.timer); PL.seq++; PL.pending = false; PL.vals = clone(PL.data.doc); PL.proj = null; PL.err = ''; render() }
+  else if (a === 'plankeep') {
+    PL.busy = true; render()
+    send('PUT', '/plan', PL.vals).then(p => { setPlan(p); PL.err = ''; return api('/goals').then(g => { PL.goals = g }) }, e => { PL.err = e.message }).finally(() => { PL.busy = false; render() })
+  }
+  else if (a === 'evdel') { PL.vals.events.splice(+d.i, 1); planChanged() }
+  else if (a === 'evedit') { const e = PL.vals.events[+d.i]; PL.ev = { ...e, amount: e.amount / 100, until: e.until || '', editing: +d.i }; render(); $('[data-planform="event"] [name="name"]')?.focus() }
+  else if (a === 'vests') { PL.vals.vests = { ...PL.vals.vests, off: !PL.vals.vests?.off || undefined }; planChanged() }
+  else if (a === 'goalnew') { PL.goal = {}; PL.gErr = ''; render(); $('[data-planform="goal"] [name="name"]')?.focus() }
+  else if (a === 'goaledit') { PL.goal = clone(PL.goals.find(g => g.id === +d.v)); PL.gErr = ''; render(); $('[data-planform="goal"] [name="name"]')?.focus() }
+  else if (a === 'goalcancel') { PL.goal = null; render() }
+  else if (a === 'goaldel') send('DELETE', '/goals/' + d.v).then(() => api('/goals')).then(g => { PL.goals = g; PL.goal = null }, e => { PL.gErr = e.message }).finally(render)
 })
 document.addEventListener('change', e => {
   const t = e.target
-  if (t.matches('.typepick')) setAccountType(t.dataset.id, t.value)
+  if (t.dataset.surplus !== undefined) tryVal(PL.vals, 'surplus_account', t.value, '')
+  else if (t.dataset.knob) {
+    const k = t.dataset.knob, kind = t.dataset.kind, n = kind === 'money' ? Math.round(+t.value * 100) : +t.value
+    if (t.value !== '' && Number.isFinite(n)) tryVal(PL.vals, k, n, knobBase(k))
+  } else if (t.dataset.acct) {
+    const id = t.dataset.acct, f = t.dataset.f, base = PL.data.baseline.accounts.find(a => a.id === id)
+    const n = f === 'include' ? t.checked : f === 'bucket' ? t.value : f === 'contribution' ? Math.round(+t.value * 100) : +t.value
+    if (typeof n === 'number' && (t.value === '' || !Number.isFinite(n))) return
+    const all = PL.vals.accounts ||= {}, o = all[id] ||= {}
+    if (n === base[f]) delete o[f]; else o[f] = n
+    if (!Object.keys(o).length) delete all[id]
+    if (!Object.keys(all).length) delete PL.vals.accounts
+    planChanged()
+  } else if (t.matches('.typepick')) setAccountType(t.dataset.id, t.value)
   else if (t.matches('.pick')) { if (t.value === '__new') { state.editNew = true; paintTx(); $('#newcat')?.focus() } else if (t.value) applyCat(t.dataset.id, t.value, $('#always')?.checked) }
   else if (t.matches('.filters select')) { state.f[t.dataset.f] = t.value; render() }
 })

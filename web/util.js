@@ -29,6 +29,7 @@ const P = {
   sync: '<path d="M20 11a8 8 0 0 0-14-4M4 13a8 8 0 0 0 14 4M6 3v4h4M18 21v-4h-4"/>',
   alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
   search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
+  plan: '<path d="M4 20V4M4 5h11l-2 4 2 4H4"/>',
   investments: '<path d="M3 17l6-6 4 4 8-8M15 7h6v6"/>',
   theme: '<circle cx="12" cy="12" r="8"/><path d="M12 4v16"/>',
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',

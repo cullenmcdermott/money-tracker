@@ -31,7 +31,7 @@ import (
 )
 
 // backupTables is in foreign-key order (parents first). TestBackupCoversAllTables fails if a migration adds a table missing here.
-var backupTables = []string{"items", "accounts", "balances", "transactions", "rules", "merchants", "simplefin_requests", "jev_suggestions", "jev_usage", "holdings", "recurring_marks", "alerts", "merchant_locations", "fund_classes"}
+var backupTables = []string{"items", "accounts", "balances", "transactions", "rules", "merchants", "simplefin_requests", "jev_suggestions", "jev_usage", "holdings", "recurring_marks", "alerts", "merchant_locations", "fund_classes", "plan", "goals", "goal_accounts"}
 
 // backupName matches every file we write (nightly, on demand, and the safety copy taken before a restore).
 var backupName = regexp.MustCompile(`^money-\d{8}T\d{6}Z(-pre-restore)?\.tar\.gz$`)

@@ -115,6 +115,22 @@ Requests are batched, up to 20 questions each. Exactly what is sent:
 
 Never sent: balances, amounts for accounts, transaction ids or dates. Errors and timeouts are logged without the key and never break suggestions or sync.
 
+## Plan
+
+The Plan page projects the money in your cash and investment accounts year by year, in today's dollars, to see whether it lasts and what retirement age works. It asks only for your birth year. Everything else starts from your data:
+
+- **Income and spending:** the monthly average of your last 12 complete months of cash flow (fewer if that's all there is, and the page says how many).
+- **Balances:** each account's current balance. Checking, savings and investment accounts are in; cards, loans and property are out unless you include them.
+- **Added a year:** each investment account's deposits from outside your own accounts over those months (payroll, vests). Transfers from checking are already part of the surplus.
+- **Kind and growth:** guessed from the account's name (Roth; 401(k), 403(b), IRA, HSA and the like as pre-tax; other investments as taxable; deposit accounts as cash), growing 7% a year for investments, 2% for savings and 0% for other cash.
+- **Unvested stock:** paid out evenly over 4 years at 65% after tax, from the Investments page's unvested total.
+
+Where there is no data, it uses defaults close to Monarch's: retirement at 65, spending in retirement at 100% of today's plus $6,500 a year, Social Security of $2,000 a month from 67, 3% inflation, a plan to age 90. Shortfalls are withdrawn from extra savings, then cash, taxable, pre-tax and Roth accounts, with flat taxes (12%, 20%, 0%) and a 10% penalty on pre-tax and Roth withdrawals before 59½ (65 for an HSA).
+
+Every number can be changed. A change is a what-if: the chart shows it next to a dashed line for your data alone, and nothing is saved until you keep it. You can add one-time expenses or income and yearly changes (a mortgage paid off, college years). Goals track money set aside for something against the balances of the accounts you link to them, with the saving needed each month and your pace over the last 6 months.
+
+It is a direction, not a prediction: no market swings, no tax brackets, Roth conversions or required withdrawals, and one person.
+
 ## Holdings and allocation
 
 For brokerages that send holdings through SimpleFIN, the Investments page lists each account's latest positions with their value and, where the brokerage sends a cost basis, the unrealized gain. A cost of zero or none counts as unknown (money market funds often report zero), and those positions are left out of the gain with their value noted. Unvested stock awards (zero shares with a value, described as restricted stock or RSUs) are listed apart as an estimate and left out of net worth, gains and allocation.

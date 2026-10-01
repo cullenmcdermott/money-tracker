@@ -40,6 +40,9 @@ func seedBackup(t *testing.T, db *sql.DB) {
 		`INSERT INTO alerts(kind,key,transaction_id,reasons,dismissed_at) VALUES('new_merchant','t1','t1','["First charge"]',now()),('pace','2026-09:Dining',NULL,'["over 50% above usual"]',NULL)`,
 		`INSERT INTO merchant_locations(merchant_key,base,source) VALUES('coffee',true,'owner')`,
 		`INSERT INTO fund_classes(symbol,us_stock,bonds,source,as_of) VALUES('ABCDX',6000,4000,'sec','2026-06-30')`,
+		`INSERT INTO plan(id,doc) VALUES(1,'{"birth_year":1985}')`,
+		`INSERT INTO goals(name,target_months) VALUES('Emergency fund',6)`,
+		`INSERT INTO goal_accounts(goal_id,account_id,pct) SELECT id,'a',60 FROM goals`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
