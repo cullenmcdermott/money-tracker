@@ -270,6 +270,7 @@ type simplefinAccount struct {
 	Balance          string                 `json:"balance"`
 	AvailableBalance *string                `json:"available-balance"`
 	Transactions     []simplefinTransaction `json:"transactions"`
+	Holdings         []json.RawMessage      `json:"holdings"` // not in the protocol, but Bridge sends it for some brokerages
 }
 
 type simplefinAccountSet struct {
@@ -481,6 +482,15 @@ func (s simplefinClient) syncItem(ctx context.Context, db *sql.DB, itemID, acces
 			accountID, itemID, institution, account.Name, balance, available, currency, guess, confident)
 		if err != nil {
 			return "", err
+		}
+		// Holdings are a snapshot: the latest sync replaces the account's rows.
+		if _, err := dbtx.ExecContext(ctx, `DELETE FROM holdings WHERE account_id=$1`, accountID); err != nil {
+			return "", err
+		}
+		for _, h := range account.Holdings {
+			if _, err := dbtx.ExecContext(ctx, `INSERT INTO holdings(account_id,raw) VALUES($1,$2)`, accountID, string(h)); err != nil {
+				return "", err
+			}
 		}
 		if balance != nil {
 			if _, err := dbtx.ExecContext(ctx, `INSERT INTO balances(account_id,date,current) VALUES($1,$2,$3) ON CONFLICT(account_id,date) DO UPDATE SET current=excluded.current`, accountID, today.Format("2006-01-02"), current); err != nil {

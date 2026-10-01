@@ -85,7 +85,7 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 			}
 			balance := "100.25"
 			extra := fmt.Sprintf(`,{"id":"older","posted":%d,"amount":"-5.00"}`, now.Add(-70*24*time.Hour).Unix())
-			fmt.Fprintf(w, `{"errors":["One account needs attention"],"accounts":[{"org":{"name":"Test Bank","domain":"example.test"},"id":"checking","name":"Checking","currency":"USD","balance":"%s","available-balance":"90.00","balance-date":%d,"transactions":[{"id":"same","posted":%d,"amount":"-2.50","description":"Coffee","payee":"Cafe"},{"id":"pending","posted":0,"transacted_at":%d,"amount":"-1.00","description":"Hold","pending":true},{"id":"bad-date","amount":"1.00"},{"id":"bad-amount","posted":%d,"amount":"oops"}%s]},{"org":{"name":"Card Bank"},"id":"credit","name":"Credit card","currency":"USD","balance":"-20.50","balance-date":%d,"transactions":[{"id":"same","posted":%d,"amount":"-4.00","description":"Charge"}]},{"id":"broken","name":"Broken","balance":"oops","transactions":[{"id":"valid","posted":%d,"amount":"3.00"}]}]}`, balance, posted, posted, posted, posted, extra, posted, posted, posted)
+			fmt.Fprintf(w, `{"errors":["One account needs attention"],"accounts":[{"org":{"name":"Test Bank","domain":"example.test"},"id":"checking","name":"Checking","currency":"USD","balance":"%s","available-balance":"90.00","balance-date":%d,"transactions":[{"id":"same","posted":%d,"amount":"-2.50","description":"Coffee","payee":"Cafe"},{"id":"pending","posted":0,"transacted_at":%d,"amount":"-1.00","description":"Hold","pending":true},{"id":"bad-date","amount":"1.00"},{"id":"bad-amount","posted":%d,"amount":"oops"}%s]},{"org":{"name":"Card Bank"},"id":"credit","name":"Credit card","currency":"USD","balance":"-20.50","balance-date":%d,"holdings":[{"symbol":"ACME","shares":"2"}],"transactions":[{"id":"same","posted":%d,"amount":"-4.00","description":"Charge"}]},{"id":"broken","name":"Broken","balance":"oops","transactions":[{"id":"valid","posted":%d,"amount":"3.00"}]}]}`, balance, posted, posted, posted, posted, extra, posted, posted, posted)
 		default:
 			http.NotFound(w, r)
 		}
@@ -180,6 +180,10 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 	}
 	if len(windows) != 3 || filters[2] != "" || windows[2][0] < now.Add(-14*24*time.Hour).Unix()-60 || windows[2][0] > now.Add(-14*24*time.Hour).Unix()+60 {
 		t.Errorf("repeat sync should read from 14 days before the last one: %v", windows)
+	}
+	var holdings int // both syncs send the holding; the second replaces the first
+	if err := db.QueryRow(`SELECT COUNT(*) FROM holdings WHERE account_id='sf:credit' AND raw->>'symbol'='ACME'`).Scan(&holdings); err != nil || holdings != 1 {
+		t.Errorf("holdings = %d, %v", holdings, err)
 	}
 	if _, err := db.Exec(`UPDATE items SET last_synced_at=$1 WHERE id=$2`, now.Add(-200*24*time.Hour).Format(time.RFC3339), simplefinItemID); err != nil {
 		t.Fatal(err)
