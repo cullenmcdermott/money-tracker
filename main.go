@@ -376,7 +376,12 @@ func (a *app) routes() http.Handler {
 		})
 	})
 	mux.HandleFunc("GET /api/networth", func(w http.ResponseWriter, r *http.Request) {
-		rows, err := a.db.QueryContext(r.Context(), `SELECT date,SUM(current) FROM balances GROUP BY date ORDER BY date`)
+		// Each account counts at its latest balance on or before the date (as in investments.go): a sync only writes
+		// today's row for the accounts it reached, so summing just the rows dated that day drops every account that has
+		// not synced yet and the chart's last point falls off a cliff.
+		rows, err := a.db.QueryContext(r.Context(), `SELECT d.date,SUM(b.current) FROM (SELECT DISTINCT date FROM balances) d
+			CROSS JOIN LATERAL (SELECT DISTINCT ON (account_id) current FROM balances WHERE date<=d.date ORDER BY account_id,date DESC) b
+			GROUP BY d.date ORDER BY d.date`)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
 			var date string
 			var total int64
