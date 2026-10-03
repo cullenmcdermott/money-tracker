@@ -125,6 +125,7 @@ func TestTransactionFiltersAndIncomeSummary(t *testing.T) {
 		"q=grocer_1":                     "food",
 		"q=%25":                          "food",
 		"month=2026-08&flow=out&limit=1": "food",
+		"month=2025-12..2026-08&flow=in": "pay2,pay,int",
 	} {
 		if got, _ := ids(query); got != want {
 			t.Errorf("%s: got %q, want %q", query, got, want)
@@ -138,7 +139,7 @@ func TestTransactionFiltersAndIncomeSummary(t *testing.T) {
 	if len(withTransfer) != 1 || !withTransfer[0].Transfer || withTransfer[0].AccountID != "a" {
 		t.Errorf("transfer row = %#v", withTransfer)
 	}
-	for _, bad := range []string{"month=2026-13", "month=26", "flow=sideways", "offset=-1"} {
+	for _, bad := range []string{"month=2026-13", "month=26", "month=2026-08..2026-07", "month=2026..2026-08", "flow=sideways", "offset=-1"} {
 		a.call(t, "GET", "/api/transactions?"+bad, nil, 400, nil)
 	}
 

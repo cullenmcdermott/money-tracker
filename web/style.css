@@ -154,6 +154,8 @@ main{padding:28px 32px 64px;max-width:1360px;width:100%;min-width:0}
 .need{margin-top:16px;font-size:14px;color:var(--ink2)}
 .invf{margin:4px 0 14px}
 .invchart{width:100%;height:auto;display:block;margin-top:8px}
+.cfsvg,.nwc svg,.invchart{touch-action:pan-y;user-select:none}
+.brush{fill:var(--accent);opacity:.15;pointer-events:none}
 .invchart text{fill:var(--muted);font-size:12px}
 .invleg{display:flex;gap:6px 14px;flex-wrap:wrap}
 .invleg button{background:none;border:0;padding:2px 0;display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2)}

@@ -82,6 +82,23 @@ func validPeriod(s string) bool {
 	return layout != "" && err == nil
 }
 
+// periodMonths returns the first and last month (YYYY-MM) of a period: YYYY-MM, YYYY, or a range YYYY-MM..YYYY-MM
+// (a chart zoomed to the months dragged across).
+func periodMonths(s string) (lo, hi string, ok bool) {
+	if a, b, isRange := strings.Cut(s, ".."); isRange {
+		return a, b, len(a) == 7 && len(b) == 7 && validPeriod(a) && validPeriod(b) && a <= b
+	}
+	if !validPeriod(s) {
+		return "", "", false
+	}
+	if len(s) == 4 {
+		return s + "-01", s + "-12", true
+	}
+	return s, s, true
+}
+
+const periodErr = "month must be YYYY-MM, YYYY or YYYY-MM..YYYY-MM"
+
 // investedByMonth is the net money moved from cash and credit accounts into investment (and other) accounts, so a
 // withdrawal back to checking counts negative: matched transfer pairs, plus unpaired Transfer-category rows whose
 // description names an institution you have an investment account at (history whose other side is missing).
@@ -249,11 +266,12 @@ func (a *app) routes() http.Handler {
 		if month == "" {
 			month = time.Now().Format("2006-01")
 		}
-		if !validPeriod(month) {
-			jsonResponse(w, 400, map[string]string{"error": "month must be YYYY-MM or YYYY"})
+		lo, hi, ok := periodMonths(month)
+		if !ok {
+			jsonResponse(w, 400, map[string]string{"error": periodErr})
 			return
 		}
-		rows, err := a.db.QueryContext(r.Context(), `SELECT effective_category, -SUM(amount) FROM cashflow WHERE substr(date,1,$1)=$2 AND amount<0 GROUP BY effective_category ORDER BY 2 DESC`, len(month), month)
+		rows, err := a.db.QueryContext(r.Context(), `SELECT effective_category, -SUM(amount) FROM cashflow WHERE substr(date,1,7) BETWEEN $1 AND $2 AND amount<0 GROUP BY effective_category ORDER BY 2 DESC`, lo, hi)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
 			var category string
 			var amount int64
@@ -297,8 +315,9 @@ func (a *app) routes() http.Handler {
 			}
 			offset = n
 		}
-		if m := q.Get("month"); m != "" && !validPeriod(m) {
-			jsonResponse(w, 400, map[string]string{"error": "month must be YYYY-MM or YYYY"})
+		lo, hi, ok := periodMonths(q.Get("month"))
+		if q.Get("month") != "" && !ok {
+			jsonResponse(w, 400, map[string]string{"error": periodErr})
 			return
 		}
 		if f := q.Get("flow"); f != "" && f != "in" && f != "out" {
@@ -329,8 +348,8 @@ func (a *app) routes() http.Handler {
 			source = "cashflow"
 			where = append(where, "t.amount<0")
 		}
-		if m := q.Get("month"); m != "" {
-			where = append(where, "substr(t.date,1,"+arg(len(m))+")="+arg(m))
+		if ok {
+			where = append(where, "substr(t.date,1,7) BETWEEN "+arg(lo)+" AND "+arg(hi))
 		}
 		if id := q.Get("account_id"); id != "" {
 			where = append(where, "t.account_id="+arg(id))
@@ -363,11 +382,12 @@ func (a *app) routes() http.Handler {
 	// Income by source (merchant, else name) for a month or year, largest first; the UI keeps the top few.
 	mux.HandleFunc("GET /api/summary/income", func(w http.ResponseWriter, r *http.Request) {
 		period := r.URL.Query().Get("month")
-		if !validPeriod(period) {
-			jsonResponse(w, 400, map[string]string{"error": "month must be YYYY-MM or YYYY"})
+		lo, hi, ok := periodMonths(period)
+		if !ok {
+			jsonResponse(w, 400, map[string]string{"error": periodErr})
 			return
 		}
-		rows, err := a.db.QueryContext(r.Context(), `SELECT COALESCE(NULLIF(merchant,''),name),SUM(amount) FROM cashflow WHERE amount>0 AND substr(date,1,$1)=$2 GROUP BY 1 ORDER BY 2 DESC,1`, len(period), period)
+		rows, err := a.db.QueryContext(r.Context(), `SELECT COALESCE(NULLIF(merchant,''),name),SUM(amount) FROM cashflow WHERE amount>0 AND substr(date,1,7) BETWEEN $1 AND $2 GROUP BY 1 ORDER BY 2 DESC,1`, lo, hi)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
 			var source string
 			var amount int64

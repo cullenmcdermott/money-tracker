@@ -6,10 +6,11 @@ import (
 	"database/sql"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
-// GET /api/investments?period=3m|ytd|1y|all: per investment account, where the change over the period came from.
+// GET /api/investments?period=3m|ytd|1y|all|YYYY-MM..YYYY-MM: per investment account, where the change over the period came from.
 //
 //	added    = contributions (investment_activity: transfers, payroll, conversions, and share sales, which is
 //	           when $0 vest and ESPP deposits get their value);
@@ -132,7 +133,14 @@ func (a *app) investments(ctx context.Context, period string) (map[string]any, e
 	case "all":
 		from, _ = time.Parse("2006-01-02", first.String)
 	default:
-		period, from = "ytd", time.Date(end.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+		if lo, hi, ok := periodMonths(period); ok && strings.Contains(period, "..") { // a zoomed chart's months
+			from, _ = time.Parse("2006-01", lo)
+			if last, _ := time.Parse("2006-01", hi); last.AddDate(0, 1, -1).Before(end) {
+				end = last.AddDate(0, 1, -1)
+			}
+		} else {
+			period, from = "ytd", time.Date(end.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+		}
 	}
 	fromS, endS := from.Format("2006-01-02"), end.Format("2006-01-02")
 

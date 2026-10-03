@@ -123,4 +123,12 @@ func TestInvestmentsBreakdown(t *testing.T) {
 	if got := ytd["from"]; got != "2026-05-01" { // Jul 31 minus 3 months: Go normalizes Apr 31 to May 1
 		t.Errorf("3m from = %v", got)
 	}
+	// A zoomed chart: June only, so the brokerage starts at May's close and ends at June's.
+	jun, err := (&app{db: db}).investments(context.Background(), "2026-06..2026-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := jun["accounts"].([]investmentAccount)[0]; jun["from"] != "2026-06-01" || jun["to"] != "2026-06-30" || b.Start != 1000000 || b.End != 1200000 || b.Added != 100000 || len(b.Months) != 1 {
+		t.Errorf("June = %v to %v, brokerage %+v", jun["from"], jun["to"], b)
+	}
 }

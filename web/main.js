@@ -52,11 +52,19 @@ function derive() {
   if (!MONTHS.includes(state.month)) state.month = CUR
   if (!YEARS.includes(state.year)) state.year = +CUR.slice(0, 4)
 }
-const totals = key => D.monthly.filter(r => r.month.startsWith(key)).reduce((t, r) => ({ income: t.income + r.income, expense: t.expense + r.expense, invested: t.invested + (r.invested || 0) }), { income: 0, expense: 0, invested: 0 })
-const periodKey = () => state.mode === 'month' ? state.month : String(state.year)
-const periodMonths = () => state.mode === 'month' ? [state.month] : MONTHS.filter(m => m.startsWith(String(state.year)))
-// The overview's charts all show the 12 months ending where the selected period ends.
-const windowMonths = () => { const e = periodMonths().at(-1); return monthsBetween(ym(new Date(+e.slice(0, 4), +e.slice(5) - 12, 1)), e) }
+const totals = ms => D.monthly.filter(r => ms.includes(r.month)).reduce((t, r) => ({ income: t.income + r.income, expense: t.expense + r.expense, invested: t.invested + (r.invested || 0) }), { income: 0, expense: 0, invested: 0 })
+// mode 'range' is a zoom: the months dragged across on a chart (state.range), kept as the key YYYY-MM..YYYY-MM.
+const periodKey = () => state.mode === 'range' ? state.range.join('..') : state.mode === 'month' ? state.month : String(state.year)
+const periodMonths = () => state.mode === 'range' ? monthsBetween(...state.range) : state.mode === 'month' ? [state.month] : MONTHS.filter(m => m.startsWith(String(state.year)))
+// The overview's charts all show the 12 months ending where the selected period ends, or just the months zoomed to.
+const windowMonths = () => { const e = periodMonths().at(-1); return state.mode === 'range' ? periodMonths() : monthsBetween(ym(new Date(+e.slice(0, 4), +e.slice(5) - 12, 1)), e) }
+function zoom(a, b) {
+  b = [b, CUR].sort()[0]; if (b < MONTHS[0]) return; a = [a, MONTHS[0]].sort().at(-1)
+  if (state.mode !== 'range') state.zoomFrom = { mode: state.mode, month: state.month, year: state.year }
+  if (a === b) Object.assign(state, { mode: 'month', month: a })
+  else Object.assign(state, { mode: 'range', range: [a, b], month: b })
+  state.year = +state.month.slice(0, 4); state.sel = null; render()
+}
 const rangeLabel = ms => ms.length === 1 ? mName(ms[0]) : `${mShort(ms[0])} ${ms[0].slice(0, 4)} to ${mShort(ms.at(-1))} ${ms.at(-1).slice(0, 4)}`
 // Net worth points inside that window; the last one is the value at the end of the selected period.
 const nwPoints = () => { const ms = windowMonths(), a = ms[0] + '-01', b = ms.at(-1) + '-31'; return D.networth.filter(p => p.date >= a && p.date <= b) }
@@ -81,7 +89,7 @@ const periodReady = key => ['c:', 'i:', 'u:'].every(p => cache.has(p + key))
 
 /* ---------- flow model ---------- */
 function buildModel(key) {
-  const t = totals(key), total = Math.max(t.income, t.expense)
+  const t = totals(periodMonths()), total = Math.max(t.income, t.expense)
   const cats = cache.get('c:' + key).map(r => ({ raw: r.category, name: catName(r.category), amt: r.amount }))
   const inc = cache.get('i:' + key), top = inc.slice(0, 3), rest = inc.slice(3).reduce((s, r) => s + r.amount, 0)
   const src = top.map((r, i) => ({ id: 'src:' + i, name: r.source, amt: r.amount, kind: 'src', color: 'var(--income)', f: { flow: 'in', q: r.source } }))
@@ -105,6 +113,8 @@ function navHTML(withToggle) {
   const i = MONTHS.indexOf(state.month)
   const prevOff = isM ? i <= 0 : state.year <= YEARS[0], nextOff = isM ? i >= MONTHS.length - 1 : state.year >= YEARS.at(-1)
   const title = isM ? mName(state.month) : String(state.year)
+  if (withToggle && state.mode === 'range') return `<div class="pnav"><div class="stepper"><h1 id="ptitle" aria-live="polite">${esc(rangeLabel(periodMonths()))}</h1></div>
+    <div class="frow" style="margin:0"><button class="btn ghost sm" data-act="unzoom">Reset zoom</button><div class="seg" role="group" aria-label="Period length"><button data-act="mode" data-v="month" aria-pressed="false">Month</button><button data-act="mode" data-v="year" aria-pressed="false">Year</button></div></div></div>`
   return `<div class="pnav"><div class="stepper">
     <button class="step" data-act="step" data-d="-1" ${prevOff ? 'disabled' : ''} aria-label="Previous ${isM ? 'month' : 'year'}">${icon('chevL')}</button>
     <h1 id="ptitle" aria-live="polite">${title}</h1>
@@ -133,7 +143,8 @@ function overview() {
   if (!D.items.length) return firstRun()
   const key = periodKey(), isM = state.mode === 'month', now = new Date()
   let sub
-  if (isM) {
+  if (state.mode === 'range') sub = `${periodMonths().length} months, zoomed in${periodMonths().includes(CUR) ? ` (${mShort(CUR)} is month to date)` : ''}`
+  else if (isM) {
     sub = state.month === CUR ? `Month to date${CUR === NOW_M ? `, through ${dShort(today())}` : ''}` : 'Full month'
     if (state.month === MONTHS.at(-2) && curEmpty()) sub += ` <span aria-hidden="true">·</span> ${mName(CUR)} has nothing posted yet. <button class="linkbtn" data-act="step" data-d="1">See ${mName(CUR)}</button>`
   } else {
@@ -149,7 +160,7 @@ function overview() {
     cur = buildModel(key)
     const kept = cur.a.income - cur.a.expense
     const share = c => privacy.on && cur.a.income ? `${pct(c / cur.a.income)}<small class="muted" style="font-weight:400;font-size:12px"> of income</small>` : usd0(c) // privacy: shares instead of masks
-    stats = `<div><span class="lab"><i style="background:var(--income)"></i>In</span><b>${usd0(cur.a.income)}</b></div><div><span class="lab"><i style="background:var(--spend)"></i>Out</span><b>${share(cur.a.expense)}</b></div><div><span class="lab"><i style="background:${kept >= 0 ? 'var(--kept)' : 'var(--ink2)'}"></i>${kept >= 0 ? 'Kept' : 'Over by'}</span><b>${share(Math.abs(kept))}</b></div>${totals(key).invested ? `<div><span class="lab"><i style="background:var(--cat-x3)"></i>${totals(key).invested > 0 ? 'Invested' : 'Taken from investments'}</span><b>${share(Math.abs(totals(key).invested))}</b></div>` : ''}`
+    stats = `<div><span class="lab"><i style="background:var(--income)"></i>In</span><b>${usd0(cur.a.income)}</b></div><div><span class="lab"><i style="background:var(--spend)"></i>Out</span><b>${share(cur.a.expense)}</b></div><div><span class="lab"><i style="background:${kept >= 0 ? 'var(--kept)' : 'var(--ink2)'}"></i>${kept >= 0 ? 'Kept' : 'Over by'}</span><b>${share(Math.abs(kept))}</b></div>${cur.a.invested ? `<div><span class="lab"><i style="background:var(--cat-x3)"></i>${cur.a.invested > 0 ? 'Invested' : 'Taken from investments'}</span><b>${share(Math.abs(cur.a.invested))}</b></div>` : ''}`
     body = cur.total ? `<div id="readout" aria-live="polite"></div><div id="flowbox"></div><p class="cap">${state.flowAll ? '<button class="linkbtn" data-act="flowless">Group small categories</button> ' : ''}Line thickness is proportional to amount. Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions.<span id="mincap"></span></p>`
       : isM && key === CUR && MONTHS.length > 1 ? `<div class="empty"><p><strong>${mName(key)} just started</strong></p><p>Transactions usually show up a day or two after they're made.</p><p><button class="btn ghost" data-act="step" data-d="-1">See ${mName(MONTHS.at(-2))}</button></p></div>`
       : `<div class="empty"><p><strong>Nothing recorded for ${esc(isM ? mName(key) : key)}</strong></p><p>No income or spending in this period. Try another one.</p></div>`
@@ -172,7 +183,7 @@ function overview() {
   <section class="panel cfp" aria-labelledby="ch"><div class="phead"><div><h2 id="ch">Cash flow</h2><p class="prange">${esc(rangeLabel(windowMonths()))}</p></div>
     <div class="legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--spend)"></i>Spending</span></div></div>
     <div class="cfwrap" id="cfwrap"></div>
-    <p class="cap">Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions. Highlighted bars are the selected period.${windowMonths().includes(CUR) ? ` ${esc(mName(CUR).replace(/ \d+$/, ''))} is month to date.` : ''} Select a bar to open its transactions.</p></section>
+    <p class="cap">Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions. Highlighted bars are the selected period.${windowMonths().includes(CUR) ? ` ${esc(mName(CUR).replace(/ \d+$/, ''))} is month to date.` : ''} Select a bar to open its transactions, or drag across bars to zoom in.</p></section>
   ${alertLine()}
   ${(nt => nt ? `<p class="need">${nt} account${nt === 1 ? '' : 's'} may have the wrong type. <button class="linkbtn" data-act="go" data-v="accounts">Check account types ${icon('arrow', 14)}</button></p>` : '')(D.accounts.filter(a => !a.type_confident).length)}
   ${uc ? `<p class="need">${uc}${uc >= 1000 ? '+' : ''} transaction${uc === 1 ? '' : 's'} need${uc === 1 ? 's' : ''} a category in this period. <button class="linkbtn" data-act="needcat">Review by merchant ${icon('arrow', 14)}</button></p>` : ''}`
@@ -194,11 +205,11 @@ function nwHTML() {
   const ms = periodMonths(), first = ms[0] + '-01', last = ms.at(-1) + '-31'
   const inP = pts.filter(p => p.date >= first && p.date <= last)
   let d
-  if (inP.length > 1) { const a = inP[0], b = inP.at(-1), df = b.total - a.total; d = `${df >= 0 ? '+' : '−'}${usd0(Math.abs(df))} in ${state.mode === 'month' ? mName(state.month) : state.year} (shaded)` }
+  if (inP.length > 1) { const a = inP[0], b = inP.at(-1), df = b.total - a.total; d = `${df >= 0 ? '+' : '−'}${usd0(Math.abs(df))}${state.mode === 'range' ? ' over these months' : ` in ${state.mode === 'month' ? mName(state.month) : state.year} (shaded)`}` }
   else d = 'No balance history for this period.'
   return `<div class="nwbig" id="nwval">${usd0(pts.at(-1).total)}</div><div class="nwd" id="nwlbl">${d}</div>
    ${pts.length > 1 ? `<button class="nwc" data-act="go" data-v="accounts" aria-label="Net worth trend since ${dShort(pts[0].date)}. Open accounts." id="nwc"></button>` : ''}
-   <p class="cap">Balance at the end of the selected period, with the 12 months before it.${pts.length < 2 ? ' One day of history so far, so there is no trend yet.' : ''} <button class="linkbtn" data-act="go" data-v="accounts">Accounts ${icon('arrow', 14)}</button></p>`
+   <p class="cap">Balance at the end of the selected period${state.mode === 'range' ? '' : ', with the 12 months before it'}. Drag across the chart to zoom in.${pts.length < 2 ? ' One day of history so far, so there is no trend yet.' : ''} <button class="linkbtn" data-act="go" data-v="accounts">Accounts ${icon('arrow', 14)}</button></p>`
 }
 
 /* flow diagram */
@@ -289,7 +300,7 @@ function hl(id) {
 }
 function drill(id) {
   const o = [...cur.src, ...cur.out].find(x => x.id === id); if (!o?.f) return
-  state.f = { ...blankF(), month: state.mode === 'month' ? state.month : String(state.year), ...o.f }
+  state.f = { ...blankF(), month: periodKey(), ...o.f }
   go('transactions')
 }
 function drawFlow() {
@@ -326,6 +337,27 @@ function flowEvents(box) {
   })
 }
 
+// Drag across a chart to zoom in: idx maps an x in the svg's own units to a data index, pick(i, j) gets the
+// span. The click that ends a drag is swallowed, so a plain click still does what it did before.
+function brush(svg, idx, pick) {
+  let s = null, r = null
+  const at = e => { const b = svg.getBoundingClientRect(); return (e.clientX - b.left) * svg.viewBox.baseVal.width / b.width }
+  svg.addEventListener('pointerdown', e => { if (!e.button) { s = at(e); r = null } })
+  svg.addEventListener('pointermove', e => {
+    if (s == null || (!r && Math.abs(at(e) - s) < 8)) return
+    if (!r) { r = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); r.setAttribute('class', 'brush'); r.setAttribute('height', svg.viewBox.baseVal.height); svg.append(r); svg.setPointerCapture(e.pointerId) }
+    r.setAttribute('x', Math.min(s, at(e))); r.setAttribute('width', Math.abs(at(e) - s))
+  })
+  svg.addEventListener('pointerup', e => {
+    if (r) {
+      const i = idx(s), j = idx(at(e)), stop = ev => ev.stopPropagation()
+      addEventListener('click', stop, true); setTimeout(() => { removeEventListener('click', stop, true); pick(Math.min(i, j), Math.max(i, j)) })
+    }
+    s = null
+  })
+  svg.addEventListener('pointercancel', () => { r?.remove(); s = r = null })
+}
+
 /* net worth chart */
 function drawNW() {
   const btn = $('#nwc'); if (!btn) return
@@ -340,10 +372,12 @@ function drawNW() {
   pts.forEach((p, i) => { if ((i === 0 || p.date.endsWith('-01')) && x(i) - lastX > 48) { lastX = x(i); xl += `<text x="${f1(x(i))}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : 'middle'}">${dShort(p.date)}</text>` } })
   const ms = periodMonths(), fst = ms[0] + '-01', lst = ms.at(-1) + '-31'
   const idx = pts.map((p, i) => p.date >= fst && p.date <= lst ? i : -1).filter(i => i >= 0)
-  const shade = idx.length > 1 ? `<rect x="${f1(x(idx[0]))}" y="${T}" width="${f1(x(idx.at(-1)) - x(idx[0]))}" height="${ph}" style="fill:var(--accent);opacity:.09"/>` : ''
+  const shade = idx.length > 1 && state.mode !== 'range' ? `<rect x="${f1(x(idx[0]))}" y="${T}" width="${f1(x(idx.at(-1)) - x(idx[0]))}" height="${ph}" style="fill:var(--accent);opacity:.09"/>` : ''
   const d = 'M' + pts.map((p, i) => `${f1(x(i))},${f1(y(p.total / 100))}`).join('L')
   btn.innerHTML = `<svg id="nwsvg" width="${w}" height="${H}" viewBox="0 0 ${w} ${H}" role="img" aria-label="Net worth from ${dShort(pts[0].date)} to ${dShort(pts.at(-1).date)}">${g}${shade}<path d="${d}" fill="none" style="stroke:var(--income)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${f1(x(0))}" cy="${f1(y(pts[0].total / 100))}" r="3" style="fill:var(--panel);stroke:var(--income)" stroke-width="2"/>${xl}<g id="nwx" style="display:none"><line y1="${T}" y2="${T + ph}" style="stroke:var(--muted)" stroke-dasharray="3 3"/><circle r="4" style="fill:var(--income);stroke:var(--panel)" stroke-width="2"/></g></svg>`
-  const svg = btn.firstElementChild, cx = $('#nwx'), def = { v: $('#nwval').textContent, l: $('#nwlbl').textContent }
+  const svg = btn.firstElementChild, cx = $('#nwx')
+  brush(svg, v => Math.max(0, Math.min(pts.length - 1, Math.round((v - Lm) / pw * (pts.length - 1)))), (i, j) => zoom(pts[i].date.slice(0, 7), pts[j].date.slice(0, 7)))
+  const def = { v: $('#nwval').textContent, l: $('#nwlbl').textContent }
   btn.onpointermove = e => {
     const r = svg.getBoundingClientRect(), i = Math.max(0, Math.min(pts.length - 1, Math.round((e.clientX - r.left - Lm) / pw * (pts.length - 1))))
     cx.style.display = ''; const ln = cx.querySelector('line'); ln.setAttribute('x1', x(i)); ln.setAttribute('x2', x(i))
@@ -375,6 +409,7 @@ function drawCF() {
       <rect class="hit" x="${f1(cx - gw / 2)}" y="${T}" width="${f1(gw)}" height="${H - T}"/></g>`
   })
   wrap.innerHTML = `<svg class="cfsvg hasSel" width="${w}" height="${H}" viewBox="0 0 ${w} ${H}" role="group" aria-label="Monthly income and spending, ${ser.length} months">${g}${mo}</svg><div class="tip" id="tip"></div>`
+  brush(wrap.firstElementChild, v => Math.max(0, Math.min(ser.length - 1, Math.floor((v - Lm) / gw))), (i, j) => zoom(ser[i].m, ser[j].m))
   const tip = $('#tip')
   const show = e => {
     const gEl = e.target.closest('.mo'); if (!gEl) { tip.classList.remove('on'); return }
@@ -470,7 +505,7 @@ function transactions() {
   const flowTag = F.flow ? `<button class="btn ghost sm flowtag" data-act="unflow">${F.flow === 'in' ? 'Money in only' : 'Money out only'} ${icon('x', 14)}</button>` : ''
   return `${banner()}<div class="pagehead"><h1>Transactions</h1><span class="muted" id="txcount"></span><a class="btn ghost sm" href="#alerts" style="margin-left:auto">Alerts${openAl().length ? ` (${openAl().length})` : ''}</a><a class="btn ghost sm" href="#review">Review by merchant ${icon('arrow', 14)}</a></div>
   <div class="filters">
-   <select data-f="month" aria-label="Month"><option value="all">All months</option>${YEARS.map(y => `<option value="${y}" ${F.month === String(y) ? 'selected' : ''}>All of ${y}</option>`).join('')}${[...MONTHS].reverse().map(m => `<option value="${m}" ${F.month === m ? 'selected' : ''}>${mName(m)}</option>`).join('')}</select>
+   <select data-f="month" aria-label="Month"><option value="all">All months</option>${F.month.includes('..') ? `<option value="${F.month}" selected>${esc(rangeLabel(monthsBetween(...F.month.split('..'))))}</option>` : ''}${YEARS.map(y => `<option value="${y}" ${F.month === String(y) ? 'selected' : ''}>All of ${y}</option>`).join('')}${[...MONTHS].reverse().map(m => `<option value="${m}" ${F.month === m ? 'selected' : ''}>${mName(m)}</option>`).join('')}</select>
    <select data-f="cat" aria-label="Category"><option value="all">All categories</option><option value="__none" ${F.cat === '__none' ? 'selected' : ''}>Uncategorized</option>${catOpts.map(c => `<option value="${esc(c)}" ${F.cat === c ? 'selected' : ''}>${esc(catName(c))}</option>`).join('')}</select>
    <select data-f="acct" aria-label="Account"><option value="all">All accounts</option>${D.accounts.map(a => `<option value="${esc(a.id)}" ${F.acct === a.id ? 'selected' : ''}>${esc(a.institution)} ${esc(a.name)}</option>`).join('')}</select>
    <div class="sbox">${icon('search', 18)}<input type="search" id="q" placeholder="Search merchants" aria-label="Search transactions" value="${esc(F.q)}"></div>
@@ -701,7 +736,7 @@ function investments() {
   const rows = [...shown].sort((x, y) => INV.dir * (INV.sort === 'name' ? x.name.localeCompare(y.name) : INV.sort === 'ret' ? (ret(x.gain, x) ?? -Infinity) - (ret(y.gain, y) ?? -Infinity) : x[INV.sort] - y[INV.sort]))
   const th = (k, l) => `<th><button data-act="invs" data-v="${k}" ${INV.sort === k ? `aria-sort="${INV.dir < 0 ? 'descending' : 'ascending'}"` : ''}>${l}${INV.sort === k ? (INV.dir < 0 ? ' ↓' : ' ↑') : ''}</button></th>`
   return `${head}
-  <p class="sub">${esc(dMed(INV.data.from))} to ${esc(dMed(INV.data.to))}. Added is money you put in (transfers, payroll, conversions, vests once sold); market change is the rest of the growth.</p>
+  <p class="sub">${esc(dMed(INV.data.from))} to ${esc(dMed(INV.data.to))}${INV.period.includes('..') ? ', zoomed in. <button class="linkbtn" data-act="invunzoom">Reset zoom</button>' : ''}. Added is money you put in (transfers, payroll, conversions, vests once sold); market change is the rest of the growth.</p>
   <div class="invf"><div class="seg" role="group" aria-label="Account type">${['all', 'Taxable', 'Retirement', 'Equity comp'].map(k => `<button data-act="invk" data-v="${k}" aria-pressed="${INV.kind === k}">${k === 'all' ? 'All' : k}</button>`).join('')}</div></div>
   <section class="panel"><div class="fstats">
     <div><span class="lab"><i style="background:var(--income)"></i>Balance</span><b>${usd0(T.end)}</b></div>
@@ -713,7 +748,7 @@ function investments() {
     ${INV.chart === 'stack' ? `<div class="invleg">${shown.map(a => `<button data-act="invh" data-v="${esc(a.id)}" aria-pressed="${!INV.hidden.has(a.id)}"><i style="background:${a.color}"></i>${esc(clip(a.name, 34))}</button>`).join('')}</div>`
       : '<div class="legend"><span><i style="background:var(--income)"></i>Balance</span><span><i style="background:var(--kept)"></i>Starting balance + what you added</span></div>'}
     ${invChart(INV.chart === 'stack' ? shown.filter(a => !INV.hidden.has(a.id)) : shown)}
-    <p class="cap">${INV.chart === 'stack' ? 'Select an account in the legend to hide it.' : 'The gap between the lines is growth: dividends plus market change.'} Month-end balances.</p></section>
+    <p class="cap">${INV.chart === 'stack' ? 'Select an account in the legend to hide it.' : 'The gap between the lines is growth: dividends plus market change.'} Month-end balances. Drag across the chart to zoom in.</p></section>
   <section class="panel" style="margin-top:16px"><div class="tblwrap"><table class="invtbl"><thead><tr>${th('name', 'Account')}${th('start', 'Start')}${th('added', 'Added')}${th('dividends', 'Dividends')}${th('market', 'Market')}${th('ret', 'Return')}${th('end', 'Balance')}</tr></thead>
     <tbody>${rows.map(a => `<tr data-act="invrow" data-v="${esc(a.id)}" tabindex="0"><td><span class="invn"><i style="background:${a.color}"></i><span><b>${esc(a.name)}</b><br><small>${esc(a.institution)} · ${a.kind}</small></span></span></td>
       <td>${usd0(a.start)}</td><td>${sgn(a.added)}</td><td>${sgn(a.dividends)}</td><td class="${a.market >= 0 ? 'up' : 'down'}">${sgn(a.market)}</td><td>${pc(ret(a.gain, a))}</td><td><b>${usd0(a.end)}</b></td></tr>`).join('')}</tbody>
@@ -1405,6 +1440,13 @@ function render(top) {
   paintNav()
   document.title = (VIEWS.find(x => x[0] === v)?.[1] || SUBVIEWS[v]?.[1] || 'Overview') + ' · Money Tracker'
   if (state.loaded && v === 'overview') { drawFlow(); drawNW(); drawCF(); const box = $('#flowbox'); if (box) flowEvents(box) }
+  if (state.loaded && v === 'investments' && $('.invchart')) {
+    const svg = $('.invchart'), months = INV.data.accounts[0].months, n = months.length
+    brush(svg, v => Math.max(0, Math.min(n - 1, Math.round((v - 58) / (760 - 58 - 12) * (n - 1)))), (i, j) => {
+      if (!INV.period.includes('..')) INV.zoomFrom = INV.period
+      INV.period = `${months[i].month}..${months[j].month}`; INV.data = null; render()
+    })
+  }
   if (state.loaded && v === 'transactions') { paintTx(); fetchTx('reset'); loadAlerts() }
   if (state.loaded && v === 'settings' && D.rules === null && !state.rulesErr) loadRules()
   if (state.loaded && v === 'settings' && bk.data === null && !bk.err && !bk.phase) loadBackups()
@@ -1434,11 +1476,13 @@ document.addEventListener('click', e => {
   if (!el) return
   const a = el.dataset.act, d = el.dataset
   if (a === 'step') step(+d.d)
-  else if (a === 'mode') { state.mode = d.v; if (d.v === 'year') state.year = +state.month.slice(0, 4); state.sel = null; render() }
+  else if (a === 'unzoom') { Object.assign(state, state.zoomFrom || { mode: 'month' }); state.zoomFrom = null; state.sel = null; render() }
+  else if (a === 'mode') { state.zoomFrom = null; state.mode = d.v; if (d.v === 'year') state.year = +state.month.slice(0, 4); state.sel = null; render() }
   else if (a === 'go') go(d.v)
   else if (a === 'drill') drill(d.id)
   else if (a === 'needcat') go('review')
-  else if (a === 'invp') { INV.period = d.v; INV.data = null; render() }
+  else if (a === 'invp') { INV.period = d.v; INV.zoomFrom = null; INV.data = null; render() }
+  else if (a === 'invunzoom') { INV.period = INV.zoomFrom || 'ytd'; INV.zoomFrom = null; INV.data = null; render() }
   else if (a === 'invk') { INV.kind = d.v; render() }
   else if (a === 'invc') { INV.chart = d.v; render() }
   else if (a === 'invh') { INV.hidden.has(d.v) ? INV.hidden.delete(d.v) : INV.hidden.add(d.v); render() }
