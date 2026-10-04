@@ -48,13 +48,45 @@ func planApp(t *testing.T) (*app, time.Time) {
 
 func TestPlanBaseline(t *testing.T) {
 	a, today := planApp(t)
+	// An equity awards account: an RSU vest and an ESPP purchase arrive as $0 deposits and get their value when
+	// sold; the proceeds are journaled to the brokerage. A Roth conversion, and a stock sale in an account with no
+	// vest or purchase to tie it to. Savings pays interest.
+	if _, err := a.db.Exec(`INSERT INTO accounts(id,item_id,name,guessed_type,current) VALUES('stock','item','Equity Awards','investment',500000),
+			('odd','item','Fabrikam Shares','investment',100000);
+		INSERT INTO transactions(id,account_id,date,amount,name) VALUES
+			('lapse','stock','2026-03-20',0,'RESTRICTED STOCK LAPSE'),('rsu-sale','stock','2026-04-02',600000,'SHARESALE'),
+			('espp','stock','2026-05-15',0,'EMPLOYEE STOCK PURCHASE PLAN DEPOSIT'),('espp-sale','stock','2026-05-20',300000,'SHARESALE'),
+			('jto','stock','2026-05-21',-900000,'Journal To Account XY99'),('jfrm','brk','2026-05-22',900000,'JOURNAL FRM ...999'),
+			('conv','roth','2026-06-01',700000,'Conversion (incoming)'),('odd-sale','odd','2026-06-03',200000,'SHARESALE'),
+			('int','sav','2026-05-31',15000,'INTEREST PAYMENT')`); err != nil {
+		t.Fatal(err)
+	}
 	b, err := a.planBaseline(context.Background(), today)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// September is not complete, so the baseline is April to August: 5 months.
-	if b.Months != 5 || b.Income != 500000 || b.Spending != 300000 || b.Unvested != 400000 {
-		t.Errorf("baseline = %d months, income %d, spending %d, unvested %d", b.Months, b.Income, b.Spending, b.Unvested)
+	// Interest is left out of income: savings grows at the 1% it paid instead.
+	if b.Months != 5 || b.Income != 500000 || b.Spending != 300000 || b.Interest != 3000 || b.Unvested != 400000 {
+		t.Errorf("baseline = %d months, income %d, spending %d, interest %d, unvested %d", b.Months, b.Income, b.Spending, b.Interest, b.Unvested)
+	}
+	if len(b.IncomeSources) != 1 || b.IncomeSources[0] != (planSource{"PAYROLL", 6000000, 5}) {
+		t.Errorf("income sources = %+v", b.IncomeSources)
+	}
+	if len(b.UnclearSales) != 1 || b.UnclearSales[0].AccountID != "odd" || b.UnclearSales[0].Amount != 200000 {
+		t.Errorf("unclear sales = %+v", b.UnclearSales)
+	}
+	split := map[string][5]int64{ // deposits, ESPP, RSU, unclear, internal; a year
+		"k401":  {230000 * 12 / 5, 0, 0, 0, 0},
+		"stock": {0, 300000 * 12 / 5, 600000 * 12 / 5, 0, 0}, // the RSU sale's vest was before the window
+		"brk":   {0, 0, 0, 0, 900000 * 12 / 5},
+		"roth":  {0, 0, 0, 0, 700000 * 12 / 5},
+		"odd":   {0, 0, 0, 200000 * 12 / 5, 0},
+	}
+	for _, ac := range b.Accounts {
+		if got := [5]int64{ac.Deposits, ac.ESPP, ac.RSU, ac.Unclear, ac.Internal}; got != split[ac.ID] {
+			t.Errorf("%s contributions = %v, want %v", ac.ID, got, split[ac.ID])
+		}
 	}
 	want := map[string]struct {
 		include bool
@@ -62,13 +94,15 @@ func TestPlanBaseline(t *testing.T) {
 		growth  float64
 		contrib int64
 	}{
-		"chk":  {true, "cash", 0, 0},
-		"sav":  {true, "cash", 2, 0},
-		"roth": {true, "roth", 7, 0},
-		"k401": {true, "pretax", 7, 230000 * 12 / 5}, // payroll counts, annualized from 5 months
-		"brk":  {true, "taxable", 7, 0},              // a transfer from checking is already in the cash-flow surplus
-		"hsa":  {true, "pretax", 7, 0},
-		"card": {false, "cash", 0, 0},
+		"chk":   {true, "cash", 0, 0},
+		"sav":   {true, "cash", 1, 0},
+		"roth":  {true, "roth", 7, 0},
+		"k401":  {true, "pretax", 7, 230000 * 12 / 5}, // payroll counts, annualized from 5 months
+		"brk":   {true, "taxable", 7, 0},              // a transfer from checking is in the surplus; a journal is internal
+		"hsa":   {true, "pretax", 7, 0},
+		"card":  {false, "cash", 0, 0},
+		"stock": {true, "taxable", 7, 300000 * 12 / 5}, // only the ESPP sale: future vests come from the unvested stock
+		"odd":   {true, "taxable", 7, 0},
 	}
 	for _, ac := range b.Accounts {
 		w, ok := want[ac.ID]
@@ -164,6 +198,19 @@ func TestProjectScenarios(t *testing.T) {
 			t.Errorf("%d income = %d, want %d", y.Year, y.Income, want)
 		}
 	}
+	// On October 1, three months of the year are left: a quarter of the year's pay, spending, contributions and
+	// vests; a one-time expense still counts in full. The next year is whole.
+	in = planCase(65, projAccount{ID: "k", Bucket: "pretax", Contribution: 1200000, PenaltyFreeAge: 59.5})
+	in.EndAge, in.Income, in.Spending, in.Elapsed = 47, 1000000, 400000, 0.75
+	in.Events = []planEvent{{Kind: "expense", Name: "Roof", Year: 2026, Amount: 100000}}
+	in.Vests = planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 50}
+	years, _ = project(in)
+	if y := years[0]; y.Income != 3000000+125000 || y.Spending != 1200000+100000 || y.Contributions != 300000 {
+		t.Errorf("rest of the first year = %+v", y)
+	}
+	if y := years[1]; y.Income != 12000000+500000 || y.Spending != 4800000 || y.Contributions != 1200000 {
+		t.Errorf("first full year = %+v", y)
+	}
 	// Retiring now, at 46, stops pay, contributions and vests at once: what hasn't vested is forfeited.
 	in = planCase(46, projAccount{ID: "k", Bucket: "pretax", Balance: 10000000, Contribution: 600000, PenaltyFreeAge: 59.5})
 	in.EndAge, in.Income, in.Vests = 47, 1000000, planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 50}
@@ -221,8 +268,8 @@ func TestPlanAPI(t *testing.T) {
 		DataProjection planProjection `json:"data_projection"`
 	}
 	a.call(t, "POST", "/api/plan/projection", map[string]any{"birth_year": 1985, "spending_monthly": 100}, 200, &what)
-	if what.Projection.Years[0].Spending != 1200 || what.DataProjection.Years[0].Spending != 300000*12 {
-		t.Errorf("what-if spending = %d, data %d", what.Projection.Years[0].Spending, what.DataProjection.Years[0].Spending)
+	if what.Projection.Years[1].Spending != 1200 || what.DataProjection.Years[1].Spending != 300000*12 {
+		t.Errorf("what-if spending = %d, data %d", what.Projection.Years[1].Spending, what.DataProjection.Years[1].Spending)
 	}
 	a.call(t, "GET", "/api/plan", nil, 200, &got)
 	if got.Doc.Spending != nil {
@@ -248,24 +295,42 @@ func TestResolvePlan(t *testing.T) {
 	growth, off := 5.0, false
 	spend := int64(250000)
 	doc := planDoc{BirthYear: 1985, Spending: &spend, Accounts: map[string]planAccountDoc{"k": {Growth: &growth}, "chk": {Include: &off}, "gone": {Include: &off}}}
-	in := resolvePlan(doc, base, 2026)
+	jan1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	in := resolvePlan(doc, base, jan1)
 	if in.RetireAge != 65 || in.EndAge != 90 || in.SSAge != 67 || in.SSMonthly != 200000 || in.RetireExtra != 650000 || in.Inflation != 3 || in.RetireSpendPct != 100 {
 		t.Errorf("defaults = %+v", in)
 	}
 	if in.Income != 500000 || in.Spending != 250000 || len(in.Accounts) != 1 || in.Accounts[0].Growth != 5 || in.Accounts[0].Contribution != 50 {
 		t.Errorf("resolved = %+v", in)
 	}
-	if in.Vests != (planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 65}) {
+	if in.Elapsed != 0 {
+		t.Errorf("on January 1 nothing of the year is past: %v", in.Elapsed)
+	}
+	if in.Vests != (planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 65, Source: "default"}) {
 		t.Errorf("vests follow the unvested total by default: %+v", in.Vests)
 	}
 	total := int64(1000000)
 	doc.Vests = planVestsDoc{Total: &total}
-	if v := resolvePlan(doc, base, 2026).Vests; v.Total != 1000000 {
+	if v := resolvePlan(doc, base, jan1).Vests; v.Total != 1000000 {
 		t.Errorf("vests total set by the owner: %+v", v)
 	}
 	doc.Vests = planVestsDoc{Off: true}
-	if v := resolvePlan(doc, base, 2026).Vests; v.Years != 0 {
+	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 0 {
 		t.Errorf("vests off: %+v", v)
+	}
+	// $10,000 a year of RSU sales in the data: $40,000 unvested at 65% after tax ($26,000) takes 3 years.
+	base.Accounts = append(base.Accounts, planAccount{ID: "stock", Include: true, Bucket: "taxable", RSU: 1000000})
+	doc.Vests = planVestsDoc{}
+	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 3 || v.Source != "pace" {
+		t.Errorf("vests at the data's pace: %+v", v)
+	}
+	years := 6
+	doc.Vests = planVestsDoc{Years: &years}
+	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 6 || v.Source != "owner" {
+		t.Errorf("vest years set by the owner: %+v", v)
+	}
+	if e := resolvePlan(doc, base, time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)).Elapsed; e != 274.0/365 {
+		t.Errorf("October 2 elapsed = %v", e)
 	}
 }
 

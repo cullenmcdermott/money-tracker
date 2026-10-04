@@ -978,19 +978,20 @@ function plan() {
   </section>
   ${goalsHTML(v)}
   <section class="panel" style="margin-top:16px">
+    ${sourcesHTML(P, accts)}
     <details class="psec" ${PL.open?.accounts ? 'open' : ''} data-sec="accounts"><summary>Accounts <span class="muted">${included.length} included</span></summary>
       <div class="tblwrap"><table class="invtbl ptbl"><thead><tr><th>Account</th><th>In plan</th><th>Kind</th><th>Growth</th><th>Added a year</th><th>Balance</th></tr></thead><tbody>
       ${accts.map(a => { const o = acc(a.id), on = o.include ?? a.include, ch = ['include', 'bucket', 'growth', 'contribution'].some(f => o[f] != null)
         return `<tr class="${ch ? 'chg' : ''}"><td><b>${esc(a.name)}</b><br><small class="muted">${esc(a.institution)}${ch ? ` · changed <button class="linkbtn" data-act="acctreset" data-v="${esc(a.id)}">use my data</button>` : ''}</small></td>
           <td><input type="checkbox" id="pa-${esc(a.id)}-include" data-acct="${esc(a.id)}" data-f="include" ${on ? 'checked' : ''} aria-label="Include ${esc(a.name)}"></td>
           <td><select id="pa-${esc(a.id)}-bucket" data-acct="${esc(a.id)}" data-f="bucket" aria-label="Kind of ${esc(a.name)}">${[['cash', 'Cash'], ['taxable', 'Taxable'], ['pretax', 'Pre-tax'], ['roth', 'Roth']].map(([b, l]) => `<option value="${b}" ${(o.bucket ?? a.bucket) === b ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
-          <td><input type="number" step="0.5" class="pnum" id="pa-${esc(a.id)}-growth" data-acct="${esc(a.id)}" data-f="growth" value="${o.growth ?? a.growth}" aria-label="Growth of ${esc(a.name)}, % a year">%</td>
-          <td>${privacy.on ? '$•••' : `<input type="number" step="500" class="pnum" id="pa-${esc(a.id)}-contribution" data-acct="${esc(a.id)}" data-f="contribution" value="${Math.round((o.contribution ?? a.contribution) / 100)}" aria-label="Added to ${esc(a.name)} a year, dollars">`}</td>
+          <td><input type="number" step="0.5" class="pnum" id="pa-${esc(a.id)}-growth" data-acct="${esc(a.id)}" data-f="growth" value="${o.growth ?? a.growth}" aria-label="Growth of ${esc(a.name)}, % a year">%${a.interest ? `<br><small class="muted">paid ${usd0(a.interest)} a year</small>` : ''}</td>
+          <td>${privacy.on ? '$•••' : `<input type="number" step="500" class="pnum" id="pa-${esc(a.id)}-contribution" data-acct="${esc(a.id)}" data-f="contribution" value="${Math.round((o.contribution ?? a.contribution) / 100)}" aria-label="Added to ${esc(a.name)} a year, dollars">`}${addedNote(a)}</td>
           <td>${usd0(a.balance)}</td></tr>` }).join('')}</tbody></table></div>
-      <p class="cap">Added a year starts from deposits from outside your accounts in the last ${D.baseline.months} months (payroll, vests); transfers from your own accounts are already part of your surplus. Growth is before inflation. Cards, loans and property are left out unless you include them.</p></details>
+      <p class="cap">Added a year starts from money that came from outside your accounts in the last ${D.baseline.months} months: payroll deposits and ESPP sales. RSU sales are left out (future vests come from your unvested stock), and so are moves between your own accounts, which are already part of your surplus. A cash account that paid interest grows at the rate it paid. Growth is before inflation. Cards, loans and property are left out unless you include them.</p></details>
     <details class="psec" ${PL.open?.events ? 'open' : ''} data-sec="events"><summary>Events <span class="muted">${evs.length + (vestOn ? 1 : 0)} in the plan</span></summary>
       ${evs.map(e => `<div class="pev"><span class="y">${e.year}</span><span class="d">${evText(e)}</span>${e.fixed ? '<span class="muted" style="font-size:12px">Set in your numbers</span>' : `<button class="linkbtn" data-act="evedit" data-i="${e.i}">Edit</button><button class="linkbtn" data-act="evdel" data-i="${e.i}">Remove</button>`}</div>`).join('')}
-      ${D.baseline.unvested > 0 ? `<div class="pev"><span class="y">${new Date().getFullYear()}</span><span class="d">${vestOn ? `Unvested stock, ${usd0(D.baseline.unvested)} at the last sync, paid out over ${v.vests?.years ?? D.defaults.vest_years} years at ${v.vests?.after_tax_pct ?? D.defaults.vest_after_tax_pct}% after tax while you're working; what hasn't vested by retirement is forfeited` : '<span class="muted">Unvested stock is left out</span>'}</span><button class="linkbtn" data-act="vests">${vestOn ? 'Leave out' : 'Add back'}</button></div>` : ''}
+      ${D.baseline.unvested > 0 ? `<div class="pev"><span class="y">${new Date().getFullYear()}</span><span class="d">${vestOn ? vestText(P.vests) : '<span class="muted">Unvested stock is left out</span>'}</span><button class="linkbtn" data-act="vests">${vestOn ? 'Leave out' : 'Add back'}</button></div>` : ''}
       <form class="evform" data-planform="event">
         <label>Kind<select name="kind">${[['expense', 'One-time expense'], ['income', 'One-time income'], ['spending', 'Spending change a year'], ['earning', 'Income change a year']].map(([k, l]) => `<option value="${k}" ${E.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label>Name<input name="name" value="${esc(E.name)}" placeholder="New roof" maxlength="80" required></label>
@@ -1003,6 +1004,41 @@ function plan() {
       <div class="tblwrap"><table class="invtbl ptbl"><thead><tr><th>Year</th><th>Age</th><th>Income</th><th>Spending</th><th>Withdrawn</th><th>Tax</th><th>Assets</th></tr></thead><tbody>
       ${P.years.map(y => `<tr class="${y.shortfall ? 'short' : ''}"><td>${y.year}</td><td>${y.age}</td><td>${usd0(y.income)}</td><td>${usd0(y.spending)}</td><td>${y.withdrawn ? usd0(y.withdrawn) : '—'}</td><td>${y.taxes ? usd0(y.taxes) : '—'}</td><td>${y.shortfall ? `<span class="down">${usd0(-y.shortfall)}</span>` : usd0(y.assets)}</td></tr>`).join('')}</tbody></table></div></details>
   </section>`
+}
+// What an account's Added a year is made of, and what was left out of it.
+function addedNote(a) {
+  const inn = [a.deposits && `${usd0(a.deposits)} deposits`, a.espp && `${usd0(a.espp)} ESPP`].filter(Boolean)
+  const out = [a.rsu && `${usd0(a.rsu)} RSU sales`, a.unclear && `${usd0(a.unclear)} unclear stock sales`, a.internal && `${usd0(a.internal)} from your own accounts`].filter(Boolean)
+  return inn.length || out.length ? `<br><small class="muted">${inn.join(' + ')}${out.length ? `${inn.length ? '; ' : ''}left out: ${out.join(', ')}` : ''}</small>` : ''
+}
+function vestText(vs) {
+  const D = PL.data, m = D.baseline.months, pace = D.baseline.accounts.reduce((s, a) => s + a.rsu, 0)
+  const how = vs.source === 'pace' ? `at the pace of your RSU sales (${usd0(pace)} a year over the last ${m} months)`
+    : vs.source === 'owner' ? '(set by you)' : `(assumed: no RSU sales in your last ${m} months to set the pace)`
+  return `Unvested stock, ${usd0(vs.total)} at the last sync: ${usd0(vs.total * vs.after_tax_pct / 100)} after tax (${vs.after_tax_pct}%, assumed), vesting over ${vs.years} year${vs.years === 1 ? '' : 's'} ${how}. Only while you're working; what hasn't vested at retirement is forfeited.`
+}
+// Where the forecast's starting numbers come from, what was left out so nothing counts twice, and what is
+// assumed rather than read from the data.
+function sourcesHTML(P, accts) {
+  const D = PL.data, B = D.baseline, m = B.months, name = id => accts.find(a => a.id === id)?.name || id
+  const inPlan = accts.filter(a => PL.vals.accounts?.[a.id]?.include ?? a.include), sum = (list, f) => list.reduce((s, a) => s + (a[f] || 0), 0)
+  const rsu = sum(accts, 'rsu'), internal = sum(accts, 'internal'), deposits = sum(inPlan, 'deposits'), espp = sum(inPlan, 'espp')
+  const item = (head, body) => `<div class="pev"><span class="d"><b>${head}</b><br><span class="muted">${body}</span></span></div>`
+  const srcs = B.income_sources.map(s => `<button class="linkbtn" data-act="plansrc" data-v="${esc(s.name)}">${esc(s.name)}</button> ${usd0(s.amount)} a year (${s.count})`).join(' · ')
+  const left = []
+  if (rsu) left.push(`${usd0(rsu)} a year of RSU sales: ${B.unvested > 0 ? 'future vests come from your unvested stock instead, so they count once' : 'your brokerage doesn’t report unvested stock, so no future vests are in the plan. Add an income event if you expect more'}.`)
+  if (internal) left.push(`${usd0(internal)} a year moved between your own accounts (journals, Roth conversions, withdrawals): not new money.`)
+  if (B.interest_monthly) left.push(`${usd0(B.interest_monthly * 12)} a year of interest: it’s those accounts’ growth, so it isn’t income too.`)
+  const unclear = B.unclear_sales.map(u => `${u.date} ${esc(name(u.account_id))}: ${usd0(u.amount)}`).join(' · ')
+  const yr = P.years[0]?.year
+  return `<details class="psec" ${PL.open?.sources ?? true ? 'open' : ''} data-sec="sources"><summary>Where the numbers come from <span class="muted">so nothing counts twice</span></summary>
+    ${item(`Income: ${usd0(B.income_monthly)} a month`, `The average of your last ${m} months of deposits into checking, savings and cards. Largest: ${srcs || 'none'}. If one is money from your own accounts, like stock sale proceeds from a brokerage that isn’t connected, set its category to Transfer and it leaves the forecast.`)}
+    ${item(`Added to investments: ${usd0(deposits + espp)} a year`, `${usd0(deposits)} of payroll and other deposits from outside your accounts${espp ? ` and ${usd0(espp)} of ESPP sales` : ''}, until you retire.`)}
+    ${left.length ? item('Left out', left.join('<br>')) : ''}
+    ${unclear ? item('Stock sales we couldn’t place, left out', `${unclear}. None follows an RSU vest or ESPP purchase in the same account. If they’re ESPP, add them to that account’s Added a year under Accounts; if RSUs, your unvested stock already covers them.`) : ''}
+    ${yr && P.elapsed > 0 ? item(`${yr}: the rest of the year`, `Only the ${pct(1 - P.elapsed)} of ${yr} still ahead is projected; what’s past is already in your balances.`) : ''}
+    ${item('Assumed, not from your data', `Investment growth, inflation, Social Security, retirement spending, the after-tax share of vests and the flat tax rates. Change any of them in Your numbers and Accounts.`)}
+  </details>`
 }
 // Included assets by age: the plan as a line and area, the data-only plan dashed, retirement shaded,
 // events (orange) and dated goals (purple) as markers.
@@ -1592,6 +1628,7 @@ document.addEventListener('click', e => {
   else if (a === 'ruleOk') { state.ruleDel = null; send('DELETE', '/rules/' + d.id).then(() => { D.rules = null; cache.clear(); state.perr = {}; render() }, e => { state.rulesErr = e.message; render() }) }
   else if (a === 'rulesretry') { state.rulesErr = ''; D.rules = null; render() }
   else if (a === 'planretry') { PL.err = ''; render() }
+  else if (a === 'plansrc') { state.f = { ...blankF(), flow: 'in', q: d.v }; go('transactions') }
   else if (a === 'knobreset') { delete PL.vals[d.v]; planChanged() }
   else if (a === 'acctreset') { delete PL.vals.accounts[d.v]; planChanged() }
   else if (a === 'planalldata') { const v = PL.vals; PL.vals = { birth_year: v.birth_year, events: v.events, vests: v.vests }; planChanged() }

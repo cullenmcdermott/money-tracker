@@ -119,11 +119,13 @@ Never sent: balances, amounts for accounts, transaction ids or dates. Errors and
 
 The Plan page projects the money in your cash and investment accounts year by year, in today's dollars, to see whether it lasts and what retirement age works. It asks only for your birth year. Everything else starts from your data:
 
-- **Income and spending:** the monthly average of your last 12 complete months of cash flow (fewer if that's all there is, and the page says how many).
-- **Balances:** each account's current balance. Checking, savings and investment accounts are in; cards, loans and property are out unless you include them.
-- **Added a year:** each investment account's deposits from outside your own accounts over those months (payroll, vests). Transfers from checking are already part of the surplus.
-- **Kind and growth:** guessed from the account's name (Roth; 401(k), 403(b), IRA, HSA and the like as pre-tax; other investments as taxable; deposit accounts as cash), growing 7% a year for investments, 2% for savings and 0% for other cash.
-- **Unvested stock:** paid out evenly over 4 years at 65% after tax, from the Investments page's unvested total, until you retire; what hasn't vested by then is forfeited.
+- **Income and spending:** the monthly average of your last 12 complete months of cash flow (fewer if that's all there is, and the page says how many). Interest paid into a cash account is left out of income: it sets that account's growth instead, so it isn't counted twice.
+- **Balances:** each account's current balance. Checking, savings and investment accounts are in; cards, loans and property are out unless you include them. This year's months behind you are already in the balances, so only the rest of the year is projected.
+- **Added a year:** each investment account's money from outside your own accounts over those months: payroll deposits, and ESPP share sales. Left out: RSU share sales (future vests come from the unvested stock below), moves between your own accounts (journals, Roth conversions, withdrawals and transfers, already part of the surplus or not new money), and share sales that follow neither an RSU vest nor an ESPP purchase in the same account, which the page lists for you to place. Vests and ESPP purchases are told apart by the $0 deposit each sale follows, not by the account's name.
+- **Kind and growth:** guessed from the account's name (Roth; 401(k), 403(b), IRA, HSA and the like as pre-tax; other investments as taxable; deposit accounts as cash), growing 7% a year for investments. A cash account grows at the rate of the interest it paid, or 2% for a savings account with no interest in the data, 0% otherwise.
+- **Unvested stock:** the Investments page's unvested total at 65% after tax, vesting at the pace of your RSU sales over the same months (over 4 years when there are none), until you retire; what hasn't vested by then is forfeited. No new grants are assumed.
+
+The page's "Where the numbers come from" section shows all of this: the largest sources behind income (to spot money from your own accounts, which the Transfer category takes out), what each account's contributions are made of, and what was left out and why.
 
 Where there is no data, it uses defaults close to Monarch's: retirement at 65, spending in retirement at 100% of today's plus $6,500 a year, Social Security of $2,000 a month from 67, 3% inflation, a plan to age 90. Shortfalls are withdrawn from extra savings, then cash, taxable, pre-tax and Roth accounts, with flat taxes (12%, 20%, 0%) and a 10% penalty on pre-tax and Roth withdrawals before 59½ (65 for an HSA).
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -30,15 +31,42 @@ type planAccount struct {
 	Growth         float64 `json:"growth"` // nominal yearly %, before inflation
 	Contribution   int64   `json:"contribution"`
 	PenaltyFreeAge float64 `json:"penalty_free_age"` // withdrawals before this age pay the early penalty (pre-tax and Roth)
+	// What the data shows behind Contribution and Growth, a year: Deposits (payroll and other money from outside
+	// the owner's accounts) and ESPP sales make up Contribution; RSU vest sales, unclear stock sales and moves
+	// between own accounts are left out of it; Interest, paid into a cash account, sets its Growth.
+	Deposits int64 `json:"deposits"`
+	ESPP     int64 `json:"espp"`
+	RSU      int64 `json:"rsu"`
+	Unclear  int64 `json:"unclear"`
+	Internal int64 `json:"internal"`
+	Interest int64 `json:"interest"`
 }
 
 // planBaseline is what the data says, before the owner changes anything. Amounts in cents.
 type planBaseline struct {
-	Months   int           `json:"months"` // complete months behind the averages, up to 12
-	Income   int64         `json:"income_monthly"`
-	Spending int64         `json:"spending_monthly"`
-	Unvested int64         `json:"unvested"`
-	Accounts []planAccount `json:"accounts"`
+	Months   int   `json:"months"`         // complete months behind the averages, up to 12
+	Income   int64 `json:"income_monthly"` // without interest, which is in the accounts' growth
+	Spending int64 `json:"spending_monthly"`
+	Interest int64 `json:"interest_monthly"`
+	Unvested int64 `json:"unvested"`
+	// The largest sources behind Income, a year each, so the owner can spot money that came from their own
+	// accounts (an untracked brokerage, say) and mark it as a transfer.
+	IncomeSources []planSource     `json:"income_sources"`
+	UnclearSales  []planEquitySale `json:"unclear_sales"` // stock sales tied to neither an RSU vest nor an ESPP purchase
+	Accounts      []planAccount    `json:"accounts"`
+}
+
+type planSource struct {
+	Name   string `json:"name"`
+	Amount int64  `json:"amount"` // a year
+	Count  int    `json:"count"`
+}
+
+type planEquitySale struct {
+	AccountID string `json:"account_id"`
+	Date      string `json:"date"`
+	Name      string `json:"name"`
+	Amount    int64  `json:"amount"`
 }
 
 var (
@@ -46,16 +74,30 @@ var (
 	pretaxName = regexp.MustCompile(`(?i)401 ?\(?k\)?|403 ?\(?b\)?|457|\bira\b|\bsep\b|\bsimple\b|\btsp\b|pension|\bhsa\b`)
 	hsaName    = regexp.MustCompile(`(?i)\bhsa\b`)
 	savingName = regexp.MustCompile(`(?i)saving|money market|\bcd\b`)
+	// Interest paid into a cash account, the same words investment_activity reads as income.
+	interestName = regexp.MustCompile(`(?i)dividend|interest|bank int\b`)
+)
+
+// Contributions into investment accounts, by what their names say. Moves between the owner's own accounts
+// aren't new money; RSU vests and ESPP purchases arrive as $0 share deposits whose value enters with a later
+// share sale, which goes to the most recent of them in the same account.
+var (
+	internalName = regexp.MustCompile(`(?i)journal|conversion|withdrawal|transfer`)
+	esppName     = regexp.MustCompile(`(?i)stock purchase|\bespp\b`)
+	rsuName      = regexp.MustCompile(`(?i)restricted ?stock|\brsus?\b|\blapse|\bvest|\brelease`)
+	saleName     = regexp.MustCompile(`(?i)share ?sale`)
 )
 
 // guessPlanAccount fills an account's defaults from its type and name: cash and investment accounts are in,
-// everything else (cards, loans, property) out.
+// everything else (cards, loans, property) out. A cash account that pays interest grows at the rate it paid.
 func guessPlanAccount(ac *planAccount) {
 	ac.Include = ac.Type == "depository" || ac.Type == "investment"
 	ac.Bucket, ac.Growth, ac.PenaltyFreeAge = "cash", 0, 59.5
 	switch {
 	case ac.Type != "investment":
-		if savingName.MatchString(ac.Name) {
+		if ac.Interest > 0 && ac.Balance > 0 {
+			ac.Growth = min(10, math.Round(float64(ac.Interest)/float64(ac.Balance)*200)/2)
+		} else if ac.Interest == 0 && savingName.MatchString(ac.Name) {
 			ac.Growth = 2
 		}
 	case rothName.MatchString(ac.Name):
@@ -70,8 +112,83 @@ func guessPlanAccount(ac *planAccount) {
 	}
 }
 
+// contribRow is one contribution into an investment account, from investment_activity.
+type contribRow struct {
+	account, date, name string
+	amount              int64
+}
+
+// classifyContributions sorts each account's contributions dated from on into deposits, ESPP, RSU, unclear
+// and internal, as totals over the window. rows run in date order and may start before from, so a share sale
+// early in the window still finds the vest or purchase it came from.
+func classifyContributions(rows []contribRow, from string) (sums map[string]*planAccount, unclear []planEquitySale) {
+	sums = map[string]*planAccount{}
+	kinds := map[string]map[string]bool{} // the $0-deposit kinds each account has ever had
+	for _, r := range rows {
+		if internalName.MatchString(r.name) {
+			continue
+		}
+		if kinds[r.account] == nil {
+			kinds[r.account] = map[string]bool{}
+		}
+		if esppName.MatchString(r.name) {
+			kinds[r.account]["espp"] = true
+		} else if rsuName.MatchString(r.name) {
+			kinds[r.account]["rsu"] = true
+		}
+	}
+	last := map[string]string{}
+	for _, r := range rows {
+		kind := "deposit"
+		switch {
+		case internalName.MatchString(r.name):
+			kind = "internal"
+		case esppName.MatchString(r.name):
+			kind = "espp"
+		case rsuName.MatchString(r.name):
+			kind = "rsu"
+		case saleName.MatchString(r.name):
+			k := kinds[r.account]
+			switch kind = last[r.account]; {
+			case kind != "":
+			case k["rsu"] && !k["espp"]:
+				kind = "rsu"
+			case k["espp"] && !k["rsu"]:
+				kind = "espp"
+			default:
+				kind = "unclear"
+			}
+		}
+		if (kind == "espp" || kind == "rsu") && !saleName.MatchString(r.name) {
+			last[r.account] = kind
+		}
+		if r.date < from {
+			continue
+		}
+		s := sums[r.account]
+		if s == nil {
+			s = &planAccount{}
+			sums[r.account] = s
+		}
+		switch kind {
+		case "deposit":
+			s.Deposits += r.amount
+		case "espp":
+			s.ESPP += r.amount
+		case "rsu":
+			s.RSU += r.amount
+		case "internal":
+			s.Internal += max(r.amount, 0)
+		case "unclear":
+			s.Unclear += r.amount
+			unclear = append(unclear, planEquitySale{AccountID: r.account, Date: r.date, Name: r.name, Amount: r.amount})
+		}
+	}
+	return sums, unclear
+}
+
 func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, error) {
-	b := planBaseline{Accounts: []planAccount{}}
+	b := planBaseline{Accounts: []planAccount{}, IncomeSources: []planSource{}, UnclearSales: []planEquitySale{}}
 	cur := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
 	var first sql.NullString
 	if err := a.db.QueryRowContext(ctx, `SELECT MIN(date) FROM cashflow`).Scan(&first); err != nil {
@@ -82,34 +199,76 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 		b.Months = min(12, (cur.Year()-f.Year())*12+int(cur.Month()-f.Month()))
 	}
 	from, to := cur.AddDate(0, -max(b.Months, 0), 0).Format(time.DateOnly), cur.Format(time.DateOnly)
+	yearly := func(sum int64) int64 { return sum * 12 / int64(max(b.Months, 1)) }
+	interest := map[string]int64{}
 	if b.Months > 0 {
-		var in, out int64
-		if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount) FILTER (WHERE amount>0),0), COALESCE(-SUM(amount) FILTER (WHERE amount<0),0)
-			FROM cashflow WHERE date>=$1 AND date<$2`, from, to).Scan(&in, &out); err != nil {
+		// Interest paid into a cash account is left out of income: the account's growth carries it.
+		rows, err := a.db.QueryContext(ctx, `SELECT account_id,amount,COALESCE(NULLIF(merchant,''),name) FROM cashflow WHERE date>=$1 AND date<$2`, from, to)
+		if err != nil {
 			return b, err
 		}
-		b.Income, b.Spending = in/int64(b.Months), out/int64(b.Months)
+		var in, out int64
+		bySource := map[string]*planSource{}
+		for rows.Next() {
+			var acct, name string
+			var amount int64
+			if err := rows.Scan(&acct, &amount, &name); err != nil {
+				rows.Close()
+				return b, err
+			}
+			switch {
+			case amount < 0:
+				out -= amount
+			case interestName.MatchString(name):
+				interest[acct] += amount
+				b.Interest += amount
+			default:
+				in += amount
+				if bySource[name] == nil {
+					bySource[name] = &planSource{Name: name}
+				}
+				bySource[name].Amount += amount
+				bySource[name].Count++
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return b, err
+		}
+		b.Income, b.Spending, b.Interest = in/int64(b.Months), out/int64(b.Months), b.Interest/int64(b.Months)
+		for _, s := range bySource {
+			b.IncomeSources = append(b.IncomeSources, planSource{s.Name, yearly(s.Amount), s.Count})
+		}
+		slices.SortFunc(b.IncomeSources, func(x, y planSource) int {
+			return cmp.Or(cmp.Compare(y.Amount, x.Amount), strings.Compare(x.Name, y.Name))
+		})
+		b.IncomeSources = b.IncomeSources[:min(len(b.IncomeSources), 8)]
 	}
-	// Contributions that came from outside the owner's accounts (payroll, vests); a transfer from checking is
-	// already counted as cash-flow surplus.
-	contrib := map[string]int64{}
-	rows, err := a.db.QueryContext(ctx, `SELECT ia.account_id, SUM(ia.amount) FROM investment_activity ia JOIN transactions t ON t.id=ia.id
-		WHERE ia.kind='contribution' AND t.transfer_id IS NULL AND ia.date>=$1 AND ia.date<$2 GROUP BY 1`, from, to)
+	// Contributions that came from outside the owner's accounts (payroll, ESPP); a matched transfer from checking
+	// is already counted as cash-flow surplus. All history is read so a sale can find its vest or purchase.
+	var crows []contribRow
+	rows, err := a.db.QueryContext(ctx, `SELECT ia.account_id,ia.date,ia.name,ia.amount FROM investment_activity ia JOIN transactions t ON t.id=ia.id
+		WHERE ia.kind='contribution' AND t.transfer_id IS NULL AND ia.date<$1 ORDER BY ia.account_id,ia.date,ia.id`, to)
 	if err != nil {
 		return b, err
 	}
 	for rows.Next() {
-		var id string
-		var sum int64
-		if err := rows.Scan(&id, &sum); err != nil {
+		var r contribRow
+		if err := rows.Scan(&r.account, &r.date, &r.name, &r.amount); err != nil {
 			rows.Close()
 			return b, err
 		}
-		if sum > 0 && b.Months > 0 {
-			contrib[id] = sum * 12 / int64(b.Months)
-		}
+		crows = append(crows, r)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return b, err
+	}
+	sums, unclear := map[string]*planAccount{}, []planEquitySale(nil)
+	if b.Months > 0 {
+		sums, unclear = classifyContributions(crows, from)
+	}
+	b.UnclearSales = append(b.UnclearSales, unclear...)
 	rows, err = a.db.QueryContext(ctx, `SELECT id,name,institution,type,COALESCE(current,0) FROM accounts ORDER BY institution,name`)
 	if err != nil {
 		return b, err
@@ -120,8 +279,13 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 		if err := rows.Scan(&ac.ID, &ac.Name, &ac.Institution, &ac.Type, &ac.Balance); err != nil {
 			return b, err
 		}
+		if s := sums[ac.ID]; s != nil {
+			ac.Deposits, ac.ESPP, ac.RSU = max(yearly(s.Deposits), 0), max(yearly(s.ESPP), 0), max(yearly(s.RSU), 0)
+			ac.Unclear, ac.Internal = max(yearly(s.Unclear), 0), yearly(s.Internal)
+		}
+		ac.Interest = yearly(interest[ac.ID])
 		guessPlanAccount(&ac)
-		ac.Contribution = contrib[ac.ID]
+		ac.Contribution = ac.Deposits + ac.ESPP
 		b.Accounts = append(b.Accounts, ac)
 	}
 	if err := rows.Err(); err != nil {
@@ -171,15 +335,17 @@ type projAccount struct {
 }
 
 type planVestsIn struct {
-	Total       int64   // unvested stock, paid out evenly over Years from the start year; what is left at retirement is forfeited
-	Years       int     //
-	AfterTaxPct float64 //
+	Total       int64   `json:"total"` // unvested stock, paid out evenly over Years from the start year; what is left at retirement is forfeited
+	Years       int     `json:"years"`
+	AfterTaxPct float64 `json:"after_tax_pct"`
+	Source      string  `json:"source"` // owner, pace (from the RSU sales in the data) or default
 }
 
 // planInputs is every number the projection uses, already resolved from the data, defaults and the owner's
 // changes. Monthly amounts in cents; rates in %.
 type planInputs struct {
 	BirthYear, StartYear, RetireAge, EndAge, SSAge int
+	Elapsed                                        float64 // share of StartYear already past: in the balances, so not projected again
 	Income, Spending, SSMonthly, RetireExtra       int64
 	RetireSpendPct, Inflation, ExtraGrowth         float64
 	SurplusAccount                                 string // "" = Extra savings
@@ -234,39 +400,57 @@ func project(in planInputs) (years []planYear, runOut int) {
 			}
 		}
 	}
+	vestLeft, vestYear := 0.0, 0.0
+	if v := in.Vests; v.Years > 0 {
+		vestLeft = float64(v.Total) * v.AfterTaxPct / 100
+		vestYear = vestLeft / float64(v.Years)
+	}
 	for y := in.StartYear; y-in.BirthYear <= in.EndAge; y++ {
 		age := y - in.BirthYear
 		working := age < in.RetireAge
+		// The first year is only what's left of it; one-time events in it still count in full.
+		part := 1.0
+		if y == in.StartYear {
+			part = 1 - in.Elapsed
+		}
+		share := func(c int64) int64 { return int64(math.Round(float64(c) * part)) }
 		py := planYear{Year: y, Age: age}
 		if working {
-			py.Income = in.Income * 12
+			py.Income = share(in.Income * 12)
 		}
 		if age >= in.SSAge {
-			py.Income += in.SSMonthly * 12
+			py.Income += share(in.SSMonthly * 12)
 		}
-		py.Spending = in.Spending * 12
+		py.Spending = share(in.Spending * 12)
 		if !working {
-			py.Spending = int64(math.Round(float64(py.Spending)*in.RetireSpendPct/100)) + in.RetireExtra
+			py.Spending = share(int64(math.Round(float64(in.Spending*12)*in.RetireSpendPct/100)) + in.RetireExtra)
 		}
 		for _, e := range in.Events {
-			once, yearly := y == e.Year, y >= e.Year && (e.Until == 0 || y <= e.Until)
-			switch {
-			case e.Kind == "expense" && once, e.Kind == "spending" && yearly:
+			switch yearly := y >= e.Year && (e.Until == 0 || y <= e.Until); {
+			case e.Kind == "expense" && y == e.Year:
 				py.Spending += e.Amount
-			case e.Kind == "income" && once, e.Kind == "earning" && yearly:
+			case e.Kind == "income" && y == e.Year:
 				py.Income += e.Amount
+			case e.Kind == "spending" && yearly:
+				py.Spending += share(e.Amount)
+			case e.Kind == "earning" && yearly:
+				py.Income += share(e.Amount)
 			}
 		}
-		if v := in.Vests; working && v.Years > 0 && y < in.StartYear+v.Years {
-			py.Income += int64(math.Round(float64(v.Total) * v.AfterTaxPct / 100 / float64(v.Years)))
+		// Vests while working; whatever hasn't vested at retirement is forfeited.
+		if working && vestLeft > 0 {
+			pay := math.Round(min(vestLeft, vestYear*part))
+			py.Income += int64(pay)
+			vestLeft -= pay
 		}
 		for _, p := range pots {
 			p.flow = 0
 		}
 		if working {
 			for i, ac := range in.Accounts {
-				pots[i+1].flow += float64(ac.Contribution)
-				py.Contributions += ac.Contribution
+				c := share(ac.Contribution)
+				pots[i+1].flow += float64(c)
+				py.Contributions += c
 			}
 		}
 		if net := py.Income - py.Spending; net >= 0 {
@@ -294,7 +478,7 @@ func project(in planInputs) (years []planYear, runOut int) {
 			py.Shortfall = int64(math.Round(need))
 		}
 		for _, p := range pots {
-			p.bal = max(0, p.bal+p.flow+math.Round(p.rate*(p.bal+p.flow/2)))
+			p.bal = max(0, p.bal+p.flow+math.Round(p.rate*part*(p.bal+p.flow/2)))
 			py.Assets += int64(p.bal)
 		}
 		if py.Shortfall > 0 && runOut == 0 {
@@ -361,9 +545,10 @@ func or[T any](p *T, def T) T {
 	return def
 }
 
-func resolvePlan(d planDoc, b planBaseline, year int) planInputs {
+func resolvePlan(d planDoc, b planBaseline, today time.Time) planInputs {
+	jan1 := time.Date(today.Year(), 1, 1, 0, 0, 0, 0, today.Location())
 	in := planInputs{
-		BirthYear: d.BirthYear, StartYear: year,
+		BirthYear: d.BirthYear, StartYear: today.Year(), Elapsed: float64(today.YearDay()-1) / float64(jan1.AddDate(1, 0, 0).Sub(jan1).Hours()/24),
 		RetireAge: or(d.RetireAge, planDefault.RetireAge), EndAge: or(d.EndAge, planDefault.EndAge), SSAge: or(d.SSAge, planDefault.SSAge),
 		SSMonthly: or(d.SSMonthly, planDefault.SSMonthly), RetireSpendPct: or(d.RetireSpendPct, planDefault.RetireSpendPct),
 		RetireExtra: or(d.RetireExtra, planDefault.RetireExtra), Inflation: or(d.Inflation, planDefault.Inflation), ExtraGrowth: planDefault.ExtraGrowth,
@@ -380,7 +565,19 @@ func resolvePlan(d planDoc, b planBaseline, year int) planInputs {
 			Contribution: or(o.Contribution, ac.Contribution), PenaltyFreeAge: ac.PenaltyFreeAge})
 	}
 	if !d.Vests.Off {
-		in.Vests = planVestsIn{Total: or(d.Vests.Total, b.Unvested), Years: or(d.Vests.Years, planDefault.VestYears), AfterTaxPct: or(d.Vests.AfterTaxPct, planDefault.VestAfterTax)}
+		v := planVestsIn{Total: or(d.Vests.Total, b.Unvested), Years: planDefault.VestYears, AfterTaxPct: or(d.Vests.AfterTaxPct, planDefault.VestAfterTax), Source: "default"}
+		// The pace of the RSU sales in the data says how fast the unvested stock vests. Those sales are left out of
+		// the accounts' contributions, so this is the one place vests count.
+		var pace int64
+		for _, ac := range b.Accounts {
+			pace += ac.RSU
+		}
+		if d.Vests.Years != nil {
+			v.Years, v.Source = *d.Vests.Years, "owner"
+		} else if pace > 0 && v.Total > 0 {
+			v.Years, v.Source = min(20, max(1, int(math.Ceil(float64(v.Total)*v.AfterTaxPct/100/float64(pace))))), "pace"
+		}
+		in.Vests = v
 	}
 	return in
 }
@@ -457,13 +654,16 @@ func (d planDoc) validate(year int) error {
 }
 
 type planProjection struct {
-	Years  []planYear `json:"years"`
-	RunOut int        `json:"run_out"` // age, 0 = lasts to the end of the plan
+	Years   []planYear  `json:"years"`
+	RunOut  int         `json:"run_out"` // age, 0 = lasts to the end of the plan
+	Vests   planVestsIn `json:"vests"`
+	Elapsed float64     `json:"elapsed"`
 }
 
-func runPlan(d planDoc, b planBaseline, year int) planProjection {
-	years, runOut := project(resolvePlan(d, b, year))
-	return planProjection{years, runOut}
+func runPlan(d planDoc, b planBaseline, today time.Time) planProjection {
+	in := resolvePlan(d, b, today)
+	years, runOut := project(in)
+	return planProjection{years, runOut, in.Vests, in.Elapsed}
 }
 
 func (a *app) planRoutes(mux *http.ServeMux) {
@@ -487,7 +687,7 @@ func (a *app) planRoutes(mux *http.ServeMux) {
 				apiError(w, err)
 				return
 			}
-			out["doc"], out["projection"], out["data_projection"] = d, runPlan(d, b, today.Year()), runPlan(d.dataOnly(), b, today.Year())
+			out["doc"], out["projection"], out["data_projection"] = d, runPlan(d, b, today), runPlan(d.dataOnly(), b, today)
 		}
 		jsonResponse(w, 200, out)
 	}
@@ -527,7 +727,7 @@ func (a *app) planRoutes(mux *http.ServeMux) {
 			apiError(w, err)
 			return
 		}
-		jsonResponse(w, 200, map[string]any{"projection": runPlan(d, b, today.Year()), "data_projection": runPlan(d.dataOnly(), b, today.Year())})
+		jsonResponse(w, 200, map[string]any{"projection": runPlan(d, b, today), "data_projection": runPlan(d.dataOnly(), b, today)})
 	})
 }
 
