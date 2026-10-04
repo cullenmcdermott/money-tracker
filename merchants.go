@@ -147,23 +147,12 @@ func assignMerchantKeys(ctx context.Context, db interface {
 	return nil
 }
 
-// foldMerchantCategories gives transactions with no manual category and no matching rule the "remembered"
-// category of their merchant. Precedence: manual > rule > merchant category > uncategorized. It runs
-// at the end of applyRules, so every path that recomputes rules also keeps merchant categories in sync.
-func foldMerchantCategories(ctx context.Context, db interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}) error {
-	_, err := db.ExecContext(ctx, `UPDATE transactions SET rule_category = COALESCE((SELECT category FROM merchant_roots WHERE key=transactions.merchant_key),'')
-		WHERE user_category = '' AND rule_category = ''`)
-	return err
-}
-
 func (a *app) merchantRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/merchants", func(w http.ResponseWriter, r *http.Request) {
 		// transactions counts a target's merged keys too.
-		rows, err := a.db.QueryContext(r.Context(), `SELECT m.key,m.display_name,m.merged_into,m.category,
-			(SELECT COUNT(*) FROM transactions t WHERE t.merchant_key IN (SELECT key FROM merchant_roots WHERE root=m.key))
-			FROM merchants m ORDER BY m.display_name,m.key`)
+		rows, err := a.db.QueryContext(r.Context(), `SELECT m.key,m.display_name,m.merged_into,m.category,COALESCE(c.n,0)
+			FROM merchants m LEFT JOIN (SELECT mr.root,COUNT(*) n FROM transactions t JOIN merchant_roots mr ON mr.key=t.merchant_key GROUP BY mr.root) c ON c.root=m.key
+			ORDER BY m.display_name,m.key`)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
 			var key, display, mergedInto, category string
 			var count int

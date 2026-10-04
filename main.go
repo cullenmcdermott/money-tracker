@@ -440,10 +440,12 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/networth", func(w http.ResponseWriter, r *http.Request) {
 		// Each account counts at its latest balance on or before the date (as in investments.go): a sync only writes
 		// today's row for the accounts it reached, so summing just the rows dated that day drops every account that has
-		// not synced yet and the chart's last point falls off a cliff.
-		rows, err := a.db.QueryContext(r.Context(), `SELECT d.date,SUM(b.current),COALESCE(SUM(b.current) FILTER (WHERE b.current>0),0) FROM (SELECT DISTINCT date FROM balances) d
-			CROSS JOIN LATERAL (SELECT DISTINCT ON (account_id) current FROM balances WHERE date<=d.date ORDER BY account_id,date DESC) b
-			GROUP BY d.date ORDER BY d.date`)
+		// not synced yet and the chart's last point falls off a cliff. A running sum of each account's changes gives
+		// exactly that in one pass (looking up every account's latest row per date took seconds).
+		rows, err := a.db.QueryContext(r.Context(), `SELECT date,SUM(SUM(dt)) OVER w,SUM(SUM(da)) OVER w FROM (
+			SELECT date,current-COALESCE(LAG(current) OVER a,0) dt,GREATEST(current,0)-COALESCE(GREATEST(LAG(current) OVER a,0),0) da
+			FROM balances WINDOW a AS (PARTITION BY account_id ORDER BY date)) x
+			GROUP BY date WINDOW w AS (ORDER BY date) ORDER BY date`)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
 			var date string
 			var total, assets int64

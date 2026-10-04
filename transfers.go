@@ -7,20 +7,20 @@ import (
 	"time"
 )
 
-// applyRules sets rule_category on every transaction without a manual category.
-// When several rules match, the longest pattern wins (the most specific), then the oldest rule.
-// Matching is case-insensitive (lower() folds per the database locale).
+// applyRules sets rule_category on every transaction without a manual category: the matching rule, else the
+// "remembered" category of its merchant, else ”. Precedence: manual > rule > merchant category > uncategorized.
+// When several rules match, the longest pattern wins (the most specific), then the oldest rule. Matching is
+// case-insensitive (lower() folds per the database locale). Each name and pattern is lowercased once, and only rows
+// whose category changes are written, so a sync doesn't rewrite every transaction.
 func applyRules(ctx context.Context, db interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }) error {
-	if _, err := db.ExecContext(ctx, `UPDATE transactions SET rule_category = COALESCE((
-		SELECT r.category FROM rules r
-		WHERE strpos(lower(COALESCE(NULLIF(transactions.merchant,''),transactions.name)), lower(r.pattern)) > 0
-		ORDER BY length(r.pattern) DESC, r.id LIMIT 1),'')
-		WHERE user_category = ''`); err != nil {
-		return err
-	}
-	return foldMerchantCategories(ctx, db) // remembered merchant categories rank below rules
+	_, err := db.ExecContext(ctx, `WITH r AS MATERIALIZED (SELECT lower(pattern) p,category,length(pattern) l,id FROM rules),
+		t AS (SELECT id,lower(COALESCE(NULLIF(merchant,''),name)) n,merchant_key FROM transactions WHERE user_category=''),
+		c AS (SELECT t.id,COALESCE(NULLIF((SELECT r.category FROM r WHERE strpos(t.n,r.p)>0 ORDER BY r.l DESC,r.id LIMIT 1),''),
+			(SELECT category FROM merchant_roots WHERE key=t.merchant_key),'') cat FROM t)
+		UPDATE transactions SET rule_category=c.cat FROM c WHERE transactions.id=c.id AND transactions.rule_category<>c.cat`)
+	return err
 }
 
 // transferWindow is how far apart the two sides of a transfer may be dated. Five days, because banks date a card
@@ -31,7 +31,7 @@ const transferWindow = 5 * 24 * time.Hour
 // matchTransfers pairs transactions that move money between own accounts and sets their transfer_id.
 func matchTransfers(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE transactions SET transfer_id=NULL
-		WHERE transfer_id IS NOT NULL AND transfer_id NOT IN (SELECT id FROM transactions)`); err != nil {
+		WHERE transfer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM transactions o WHERE o.id=transactions.transfer_id)`); err != nil {
 		return err
 	}
 

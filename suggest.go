@@ -105,42 +105,53 @@ type historySource struct{ db *sql.DB }
 func (historySource) Name() string { return "history" }
 
 func (h historySource) Suggest(ctx context.Context, samples []MerchantSample, _ []CategoryChoice) (map[string]Suggestion, error) {
-	out := make(map[string]Suggestion)
+	bySample := make(map[string]MerchantSample, len(samples))
+	roots := make([]string, 0, len(samples))
 	for _, s := range samples {
-		rows, err := h.db.QueryContext(ctx, `SELECT c, COUNT(*) FROM (
-				SELECT COALESCE(NULLIF(t.user_category,''),NULLIF(t.rule_category,'')) c
-				FROM transactions t JOIN merchant_roots mr ON mr.key=t.merchant_key
-				WHERE mr.root=$1 AND t.transfer_id IS NULL) u
-			WHERE c IS NOT NULL GROUP BY c ORDER BY 2 DESC, 1`, s.Key)
-		if err != nil {
+		bySample[s.Key] = s
+		roots = append(roots, s.Key)
+	}
+	// Every merchant's categories in one query, each merchant's most common first.
+	rows, err := h.db.QueryContext(ctx, `SELECT root, c, COUNT(*) FROM (
+			SELECT mr.root, COALESCE(NULLIF(t.user_category,''),NULLIF(t.rule_category,'')) c
+			FROM transactions t JOIN merchant_roots mr ON mr.key=t.merchant_key
+			WHERE t.transfer_id IS NULL AND mr.root=ANY($1)) u
+		WHERE c IS NOT NULL GROUP BY 1,2 ORDER BY 1, 3 DESC, 2`, roots)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type tally struct {
+		best         string
+		bestN, total int
+	}
+	tallies := map[string]*tally{}
+	for rows.Next() {
+		var root, c string
+		var n int
+		if err := rows.Scan(&root, &c, &n); err != nil {
 			return nil, err
 		}
-		var best string
-		var bestN, total int
-		for rows.Next() {
-			var c string
-			var n int
-			if err := rows.Scan(&c, &n); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if best == "" {
-				best, bestN = c, n
-			}
-			total += n
+		if _, ok := bySample[root]; !ok {
+			continue
 		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
+		if tallies[root] == nil {
+			tallies[root] = &tally{best: c, bestN: n}
 		}
-		if total == 0 || bestN*2 <= total { // need a strict majority
+		tallies[root].total += n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]Suggestion)
+	for root, tl := range tallies {
+		if tl.bestN*2 <= tl.total { // need a strict majority
 			continue
 		}
 		// Confidence = consistency, discounted for small samples: 4 of 4 -> 0.80, 1 of 1 -> 0.50.
-		conf := float64(bestN) / float64(total) * float64(total) / float64(total+1)
-		out[s.Key] = Suggestion{Category: best, Confidence: math.Round(conf*100) / 100, Source: "history",
-			Reason: fmt.Sprintf("You've put %d of %d %s transactions in %s", bestN, total, s.Display, best)}
+		conf := float64(tl.bestN) / float64(tl.total) * float64(tl.total) / float64(tl.total+1)
+		out[root] = Suggestion{Category: tl.best, Confidence: math.Round(conf*100) / 100, Source: "history",
+			Reason: fmt.Sprintf("You've put %d of %d %s transactions in %s", tl.bestN, tl.total, bySample[root].Display, tl.best)}
 	}
 	return out, nil
 }
@@ -210,34 +221,57 @@ func (a *app) uncategorizedSamples(ctx context.Context) ([]MerchantSample, error
 	if err != nil {
 		return nil, err
 	}
+	// Charges, the typical gap between them, and up to 3 raw bank names, for every merchant in one pass each.
+	byRoot := map[string]*MerchantSample{}
+	roots := make([]string, 0, len(samples))
 	for i := range samples {
+		byRoot[samples[i].Key] = &samples[i]
+		roots = append(roots, samples[i].Key)
+	}
+	rows, err = a.db.QueryContext(ctx, `SELECT root, COUNT(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY gap), 0) FROM (
+			SELECT mr.root, c.date::date - lag(c.date::date) OVER (PARTITION BY mr.root ORDER BY c.date) gap
+			FROM cashflow c JOIN merchant_roots mr ON mr.key=c.merchant_key WHERE mr.root=ANY($1)) g GROUP BY root`, roots)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var root string
+		var charges int
 		var gap float64
-		if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY gap), 0) FROM (
-				SELECT date::date - lag(date::date) OVER (ORDER BY date) gap FROM cashflow WHERE `+merchantGroup+`) g`, samples[i].Key).Scan(&samples[i].Charges, &gap); err != nil {
+		if err := rows.Scan(&root, &charges, &gap); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		if samples[i].Charges >= 3 {
-			samples[i].TypicalGap = int(math.Round(gap))
-		}
-		names, err := a.db.QueryContext(ctx, `SELECT DISTINCT COALESCE(NULLIF(merchant,''),name) FROM cashflow
-			WHERE effective_category='' AND `+merchantGroup+` LIMIT 3`, samples[i].Key)
-		if err != nil {
-			return nil, err
-		}
-		for names.Next() {
-			var n string
-			if err := names.Scan(&n); err != nil {
-				names.Close()
-				return nil, err
+		if s := byRoot[root]; s != nil {
+			s.Charges = charges
+			if charges >= 3 {
+				s.TypicalGap = int(math.Round(gap))
 			}
-			samples[i].RawNames = append(samples[i].RawNames, n)
-		}
-		err = names.Err()
-		names.Close()
-		if err != nil {
-			return nil, err
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	rows, err = a.db.QueryContext(ctx, `SELECT DISTINCT mr.root, COALESCE(NULLIF(c.merchant,''),c.name)
+		FROM cashflow c JOIN merchant_roots mr ON mr.key=c.merchant_key WHERE c.effective_category='' ORDER BY 1,2`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var root, name string
+		if err := rows.Scan(&root, &name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if s := byRoot[root]; s != nil && len(s.RawNames) < 3 {
+			s.RawNames = append(s.RawNames, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
 	return samples, nil
 }
 
