@@ -183,4 +183,11 @@ func TestNetWorthCarriesForward(t *testing.T) {
 	if len(got) != 2 || got[0]["date"] != "2026-09-01" || got[0]["total"] != float64(3801000) || got[1]["date"] != "2026-10-01" || got[1]["total"] != float64(3901000) {
 		t.Errorf("net worth = %v, want 3,801,000 on 09-01 then 3,901,000 on 10-01", got)
 	}
+	if _, err := a.db.Exec(`INSERT INTO balances(account_id,date,current) VALUES('a','2026-10-02',-5000)`); err != nil {
+		t.Fatal(err)
+	}
+	a.call(t, "GET", "/api/networth", nil, 200, &got)
+	if last := got[2]; last["total"] != float64(3895000) || last["assets"] != float64(3900000) || last["debts"] != float64(5000) {
+		t.Errorf("10-02 = %v, want assets 3,900,000 and debts 5,000", last)
+	}
 }

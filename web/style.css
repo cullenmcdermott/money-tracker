@@ -125,6 +125,7 @@ main{padding:28px 32px 64px;max-width:1360px;width:100%;min-width:0}
 /* net worth */
 .nwbig{font:600 34px/1.05 var(--fd);margin:6px 0 2px}
 .nwd{font-size:13px;color:var(--ink2)}
+.nwad{font-size:13px;color:var(--muted);margin-top:2px}
 .nwc{display:block;width:100%;background:none;border:0;padding:0;margin:10px 0 0;text-align:left;cursor:pointer;border-radius:6px}
 .nwc svg{display:block;overflow:visible}
 .nwc text,.cfsvg text{font-family:var(--f);font-size:12px;fill:var(--muted);font-variant-numeric:tabular-nums lining-nums}
@@ -174,6 +175,15 @@ main{padding:28px 32px 64px;max-width:1360px;width:100%;min-width:0}
 .invtbl tfoot td{font-weight:600;border-top:1px solid var(--line)}
 .invtbl b{font-weight:500}
 .invtbl small{color:var(--muted)}
+.reptbl{min-width:0}
+.reptbl tbody tr{cursor:default}
+.reptbl th[scope=row]{font-weight:400;text-align:left;padding:8px 12px 8px 0;border-top:1px solid var(--line2);position:sticky;left:0;background:var(--panel);min-width:150px;white-space:normal;color:var(--ink)}
+.reptbl td{padding:8px 0 8px 12px}
+.reptbl .rsec th{text-align:left;padding:18px 0 6px;font-size:13px;color:var(--muted);font-weight:600;position:sticky;left:0;background:var(--panel)}
+.reptbl .rtot th,.reptbl .rtot td{font-weight:600}
+.reptbl tfoot th{text-align:left;position:sticky;left:0;background:var(--panel);border-top:1px solid var(--line);padding:10px 12px 10px 0}
+.cellbtn{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer}
+.cellbtn:hover,.cellbtn:focus-visible{color:var(--accent);text-decoration:underline}
 .invn{display:inline-flex;align-items:center;gap:8px}
 .up{color:var(--kept)}.down{color:var(--err)}
 .need button{margin-left:6px}

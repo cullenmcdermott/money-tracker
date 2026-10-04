@@ -271,12 +271,17 @@ func (a *app) routes() http.Handler {
 			jsonResponse(w, 400, map[string]string{"error": periodErr})
 			return
 		}
-		rows, err := a.db.QueryContext(r.Context(), `SELECT effective_category, -SUM(amount) FROM cashflow WHERE substr(date,1,7) BETWEEN $1 AND $2 AND amount<0 GROUP BY effective_category ORDER BY 2 DESC`, lo, hi)
+		// by=merchant groups by the display merchant (the bank description when there is none) instead of the category.
+		col, field := "t.effective_category", "category"
+		if r.URL.Query().Get("by") == "merchant" {
+			col, field = "COALESCE(NULLIF("+displayMerchantSQL+",''),t.name)", "merchant"
+		}
+		rows, err := a.db.QueryContext(r.Context(), `SELECT `+col+`, -SUM(t.amount) FROM cashflow t WHERE substr(t.date,1,7) BETWEEN $1 AND $2 AND t.amount<0 GROUP BY 1 ORDER BY 2 DESC,1`, lo, hi)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
-			var category string
+			var key string
 			var amount int64
-			err := rows.Scan(&category, &amount)
-			return map[string]any{"category": category, "amount": amount}, err
+			err := rows.Scan(&key, &amount)
+			return map[string]any{field: key, "amount": amount}, err
 		})
 	})
 	mux.HandleFunc("GET /api/accounts", func(w http.ResponseWriter, r *http.Request) {
@@ -399,14 +404,14 @@ func (a *app) routes() http.Handler {
 		// Each account counts at its latest balance on or before the date (as in investments.go): a sync only writes
 		// today's row for the accounts it reached, so summing just the rows dated that day drops every account that has
 		// not synced yet and the chart's last point falls off a cliff.
-		rows, err := a.db.QueryContext(r.Context(), `SELECT d.date,SUM(b.current) FROM (SELECT DISTINCT date FROM balances) d
+		rows, err := a.db.QueryContext(r.Context(), `SELECT d.date,SUM(b.current),COALESCE(SUM(b.current) FILTER (WHERE b.current>0),0) FROM (SELECT DISTINCT date FROM balances) d
 			CROSS JOIN LATERAL (SELECT DISTINCT ON (account_id) current FROM balances WHERE date<=d.date ORDER BY account_id,date DESC) b
 			GROUP BY d.date ORDER BY d.date`)
 		queryRows(w, rows, err, func(rows *sql.Rows) (any, error) {
 			var date string
-			var total int64
-			err := rows.Scan(&date, &total)
-			return map[string]any{"date": date, "total": total}, err
+			var total, assets int64
+			err := rows.Scan(&date, &total, &assets)
+			return map[string]any{"date": date, "total": total, "assets": assets, "debts": assets - total}, err
 		})
 	})
 	a.categoryRoutes(mux)

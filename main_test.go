@@ -160,6 +160,11 @@ func TestTransactionFiltersAndIncomeSummary(t *testing.T) {
 	if len(cats) != 2 || cats[0].Category != "Groceries" && cats[0].Category != "" {
 		t.Errorf("year categories = %#v", cats)
 	}
+	var byMerchant []map[string]any
+	a.call(t, "GET", "/api/summary/categories?month=2026-08&by=merchant", nil, 200, &byMerchant)
+	if len(byMerchant) != 2 || byMerchant[0]["merchant"] != "Grocer_100%" || byMerchant[1]["merchant"] != "Cafe Nero" {
+		t.Errorf("by merchant = %v", byMerchant)
+	}
 }
 
 func TestCashflowCountsOnlyCashAccountsAndReportsInvested(t *testing.T) {

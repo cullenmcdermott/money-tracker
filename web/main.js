@@ -122,7 +122,7 @@ function navHTML(withToggle) {
     ${withToggle ? `<div class="seg" role="group" aria-label="Period length"><button data-act="mode" data-v="month" aria-pressed="${state.mode === 'month'}">Month</button><button data-act="mode" data-v="year" aria-pressed="${state.mode === 'year'}">Year</button></div>` : ''}</div>`
 }
 function step(d) {
-  if (state.view === 'spending' || state.mode === 'month') {
+  if (state.view === 'report' || state.mode === 'month') {
     state.month = MONTHS[Math.min(MONTHS.length - 1, Math.max(0, MONTHS.indexOf(state.month) + d))]
     state.year = +state.month.slice(0, 4)
   } else state.year = YEARS[Math.min(YEARS.length - 1, Math.max(0, YEARS.indexOf(state.year) + d))]
@@ -199,6 +199,7 @@ function firstRun() {
     <p>Configure SimpleFIN (see Settings) and the first sync brings in about three months of transactions. Net worth history starts from that first sync.</p>
     <a class="btn" href="#settings">Open Settings ${icon('arrow', 16)}</a></section>`
 }
+const nwSplit = p => `Assets ${usd0(p.assets)} <span aria-hidden="true">·</span> Debts ${usd0(p.debts)}`
 function nwHTML() {
   const pts = nwPoints()
   if (!pts.length) return `<div class="nwbig">—</div><div class="nwd">No balance history for these months.</div><p class="cap">Balances are recorded at each sync. <button class="linkbtn" data-act="go" data-v="settings">Settings ${icon('arrow', 14)}</button></p>`
@@ -207,7 +208,7 @@ function nwHTML() {
   let d
   if (inP.length > 1) { const a = inP[0], b = inP.at(-1), df = b.total - a.total; d = `${df >= 0 ? '+' : '−'}${usd0(Math.abs(df))}${state.mode === 'range' ? ' over these months' : ` in ${state.mode === 'month' ? mName(state.month) : state.year} (shaded)`}` }
   else d = 'No balance history for this period.'
-  return `<div class="nwbig" id="nwval">${usd0(pts.at(-1).total)}</div><div class="nwd" id="nwlbl">${d}</div>
+  return `<div class="nwbig" id="nwval">${usd0(pts.at(-1).total)}</div><div class="nwd" id="nwlbl">${d}</div><div class="nwad" id="nwad">${nwSplit(pts.at(-1))}</div>
    ${pts.length > 1 ? `<button class="nwc" data-act="go" data-v="accounts" aria-label="Net worth trend since ${dShort(pts[0].date)}. Open accounts." id="nwc"></button>` : ''}
    <p class="cap">Balance at the end of the selected period${state.mode === 'range' ? '' : ', with the 12 months before it'}. Drag across the chart to zoom in.${pts.length < 2 ? ' One day of history so far, so there is no trend yet.' : ''} <button class="linkbtn" data-act="go" data-v="accounts">Accounts ${icon('arrow', 14)}</button></p>`
 }
@@ -377,14 +378,14 @@ function drawNW() {
   btn.innerHTML = `<svg id="nwsvg" width="${w}" height="${H}" viewBox="0 0 ${w} ${H}" role="img" aria-label="Net worth from ${dShort(pts[0].date)} to ${dShort(pts.at(-1).date)}">${g}${shade}<path d="${d}" fill="none" style="stroke:var(--income)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${f1(x(0))}" cy="${f1(y(pts[0].total / 100))}" r="3" style="fill:var(--panel);stroke:var(--income)" stroke-width="2"/>${xl}<g id="nwx" style="display:none"><line y1="${T}" y2="${T + ph}" style="stroke:var(--muted)" stroke-dasharray="3 3"/><circle r="4" style="fill:var(--income);stroke:var(--panel)" stroke-width="2"/></g></svg>`
   const svg = btn.firstElementChild, cx = $('#nwx')
   brush(svg, v => Math.max(0, Math.min(pts.length - 1, Math.round((v - Lm) / pw * (pts.length - 1)))), (i, j) => zoom(pts[i].date.slice(0, 7), pts[j].date.slice(0, 7)))
-  const def = { v: $('#nwval').textContent, l: $('#nwlbl').textContent }
+  const def = { v: $('#nwval').textContent, l: $('#nwlbl').textContent, s: $('#nwad').innerHTML }
   btn.onpointermove = e => {
     const r = svg.getBoundingClientRect(), i = Math.max(0, Math.min(pts.length - 1, Math.round((e.clientX - r.left - Lm) / pw * (pts.length - 1))))
     cx.style.display = ''; const ln = cx.querySelector('line'); ln.setAttribute('x1', x(i)); ln.setAttribute('x2', x(i))
     const c = cx.querySelector('circle'); c.setAttribute('cx', x(i)); c.setAttribute('cy', y(pts[i].total / 100))
-    $('#nwval').textContent = usd0(pts[i].total); $('#nwlbl').textContent = dMed(pts[i].date)
+    $('#nwval').textContent = usd0(pts[i].total); $('#nwlbl').textContent = dMed(pts[i].date); $('#nwad').innerHTML = nwSplit(pts[i])
   }
-  btn.onpointerleave = () => { cx.style.display = 'none'; $('#nwval').textContent = def.v; $('#nwlbl').textContent = def.l }
+  btn.onpointerleave = () => { cx.style.display = 'none'; $('#nwval').textContent = def.v; $('#nwlbl').textContent = def.l; $('#nwad').innerHTML = def.s }
 }
 
 /* cash flow chart */
@@ -579,40 +580,93 @@ async function openAccount(id) {
 }
 
 /* ---------- Spending ---------- */
-async function ensureSpending(m) {
-  const prior = MONTHS.filter(k => k < m).slice(-6)
-  await Promise.all([m, ...prior].map(k => load('c:' + k, '/summary/categories?month=' + k)))
-}
+// By category or by merchant ('c:' / 'm:' cache keys), for the selected month, year or zoomed range. A single month
+// also loads the 6 months before it for the average tick.
+const spendPrior = () => state.mode === 'month' ? MONTHS.filter(k => k < state.month).slice(-6) : []
 function spending() {
-  const m = state.month, ready = cache.has('c:' + m) && MONTHS.filter(k => k < m).slice(-6).every(k => cache.has('c:' + k)), err = state.perr['s' + m]
-  const head = `${banner()}${navHTML(false)}`
-  if (!ready) {
-    if (!err && !inflight.has('s' + m)) {
-      inflight.add('s' + m)
-      ensureSpending(m).catch(e => { state.perr['s' + m] = e.message }).finally(() => { inflight.delete('s' + m); if (state.view === 'spending' && state.month === m) render() })
+  const key = periodKey(), byM = state.spendBy === 'merchant', p = byM ? 'm:' : 'c:', ek = 's' + p + key, err = state.perr[ek]
+  const prior = state.mode === 'month' ? MONTHS.filter(k => k < state.month).slice(-6) : [], head = `${banner()}${navHTML(true)}`
+  if (![key, ...prior].every(k => cache.has(p + k))) {
+    if (!err && !inflight.has(ek)) {
+      inflight.add(ek)
+      Promise.all([key, ...prior].map(k => load(p + k, `/summary/categories?month=${k}${byM ? '&by=merchant' : ''}`)))
+        .catch(e => { state.perr[ek] = e.message }).finally(() => { inflight.delete(ek); if (state.view === 'spending' && periodKey() === key) render() })
     }
     return `${head}<section class="panel" style="margin-top:16px">${err ? `<div class="empty"><p><strong>Could not load spending</strong></p><p>${esc(err)}</p><p><button class="btn ghost" data-act="retryspend">Retry</button></p></div>` : '<div class="load" role="status">Loading…</div>'}</section>`
   }
-  const rows = cache.get('c:' + m).map(r => ({ raw: r.category, name: catName(r.category), v: r.amount }))
+  const field = byM ? 'merchant' : 'category', ms = periodMonths(), n = ms.length
+  let rows = cache.get(p + key).map(r => ({ raw: r[field], name: byM ? r.merchant : catName(r.category), v: r.amount, color: byM ? 'var(--spend)' : catColor(r.category), f: byM ? { flow: 'out', q: r.merchant } : { cat: r.category === '' ? '__none' : r.category } }))
+  if (byM && rows.length > 31) rows = [...rows.slice(0, 30), { name: `${rows.length - 30} more merchants`, v: rows.slice(30).reduce((s, r) => s + r.v, 0), color: 'var(--cat-other)', f: { flow: 'out' } }]
   spendRows = rows
   const total = rows.reduce((s, r) => s + r.v, 0)
-  const prior = MONTHS.filter(k => k < m).slice(-6), pa = prior.map(k => Object.fromEntries(cache.get('c:' + k).map(r => [r.category, r.amount])))
-  const avg = c => pa.length ? pa.reduce((s, x) => s + (x[c] || 0), 0) / pa.length : null
-  const mx = Math.max(...rows.map(r => r.v), ...rows.map(r => avg(r.raw) || 0), 1)
+  const pa = prior.map(k => Object.fromEntries(cache.get(p + k).map(r => [r[field], r.amount])))
+  const avg = r => pa.length && r.raw != null ? pa.reduce((s, x) => s + (x[r.raw] || 0), 0) / pa.length : null
+  const mx = Math.max(...rows.map(r => r.v), ...rows.map(r => avg(r) || 0), 1)
+  const label = state.mode === 'month' ? mName(state.month) : state.mode === 'year' ? String(state.year) : rangeLabel(ms)
+  const note = state.mode === 'month' ? `The tick on each bar marks the average of ${prior.length ? `the ${prior.length} prior month${prior.length === 1 ? '' : 's'}` : 'prior months (none yet)'}.` : `${n} month${n === 1 ? '' : 's'}; the right column is the monthly average.`
   return `${head}
-  <p class="sub">${m === CUR ? `Month to date${CUR === NOW_M ? `, through ${dShort(today())}` : ''}. Totals will grow. ` : ''}Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions. The tick on each bar marks the average of ${prior.length ? `the ${prior.length} prior month${prior.length === 1 ? '' : 's'}` : 'prior months (none yet)'}.</p>
-  <section class="panel" style="padding-left:0;padding-right:0"><div class="gh" style="padding-top:0"><h2>Spent in ${mName(m)}</h2><b>${usd0(total)}</b></div>
+  <p class="sub">${ms.includes(CUR) ? `${mShort(CUR)} is month to date${CUR === NOW_M ? `, through ${dShort(today())}` : ''}. Totals will grow. ` : ''}Counts checking, savings and credit cards; excludes transfers, investment and loan accounts, and pending transactions. ${note}</p>
+  <div class="frow"><div class="seg" role="group" aria-label="Group spending by"><button data-act="spendby" data-v="category" aria-pressed="${!byM}">Category</button><button data-act="spendby" data-v="merchant" aria-pressed="${byM}">Merchant</button></div>
+   <button class="btn ghost sm" data-act="spendcsv" style="margin-left:auto" ${rows.length ? '' : 'disabled'}>Export CSV</button></div>
+  <section class="panel" style="padding-left:0;padding-right:0"><div class="gh" style="padding-top:0"><h2>Spent in ${esc(label)}</h2><b>${usd0(total)}</b></div>
    ${rows.length ? rows.map((r, i) => {
-    const av = avg(r.raw), d = av == null ? null : r.v - av
-    return `<button class="srow" data-act="spendcat" data-i="${i}"><span class="nm"><span class="dot" style="background:${catColor(r.raw)}"></span>${esc(r.name)}</span>
-      <span class="track"><span class="fill" style="width:${f1(r.v / mx * 100)}%;background:${catColor(r.raw)}"></span>${av != null ? `<span class="avg" style="left:calc(${f1(av / mx * 100)}% - 1px)"></span>` : ''}</span>
+    const av = avg(r), d = av == null ? null : r.v - av
+    return `<button class="srow" data-act="spendcat" data-i="${i}"><span class="nm"><span class="dot" style="background:${r.color}"></span>${esc(r.name)}</span>
+      <span class="track"><span class="fill" style="width:${f1(r.v / mx * 100)}%;background:${r.color}"></span>${av != null ? `<span class="avg" style="left:calc(${f1(av / mx * 100)}% - 1px)"></span>` : ''}</span>
       <span class="v">${usd0(r.v)}</span><span class="p">${pct(r.v / total)}</span>
-      <span class="d">${d == null ? 'No prior months' : `${usd0(Math.abs(d))} ${d >= 0 ? 'above' : 'below'} avg of ${usd0(av)}`}</span></button>`
-  }).join('') : '<div class="empty">No spending this month.</div>'}
+      <span class="d">${n > 1 ? `${usd0(Math.round(r.v / n))} a month` : d == null ? (r.raw == null ? '' : 'No prior months') : `${usd0(Math.abs(d))} ${d >= 0 ? 'above' : 'below'} avg of ${usd0(av)}`}</span></button>`
+  }).join('') : `<div class="empty">No spending in ${esc(label)}.</div>`}
   </section>
-  <p class="need">Subscriptions and bills that repeat on a schedule. <button class="linkbtn" data-act="go" data-v="recurring">Recurring charges ${icon('arrow', 14)}</button></p>`
+  <p class="need">Subscriptions and bills that repeat on a schedule. <button class="linkbtn" data-act="go" data-v="recurring">Recurring charges ${icon('arrow', 14)}</button></p>
+  <p class="need">Income and spending by month, side by side, for the 12 months ending in ${mName(state.month)}. <button class="linkbtn" data-act="go" data-v="report">Income v Expense ${icon('arrow', 14)}</button></p>`
+}
+// Rows of cells (strings or cents) as a CSV download; cents become plain dollars so a spreadsheet can add them up.
+function downloadCSV(name, rows) {
+  const cell = v => { if (typeof v === 'number') return (v / 100).toFixed(2); if (/^[=+\-@]/.test(v)) v = "'" + v; return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v } // a leading ' keeps a merchant name from running as a spreadsheet formula
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([rows.map(r => r.map(cell).join(',')).join('\n') + '\n'], { type: 'text/csv' }))
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
 }
 let spendRows = []
+
+/* ---------- Income v Expense (#report): the 12 months ending at state.month, one row per income source and category ---------- */
+let repCells = [], repCSV = []
+function report() {
+  const m = state.month, ms = MONTHS.filter(k => k <= m).slice(-12), key = 'r' + m, err = state.perr[key]
+  const head = `${banner()}${navHTML(false)}`
+  if (!ms.every(k => cache.has('c:' + k) && cache.has('i:' + k))) {
+    if (!err && !inflight.has(key)) {
+      inflight.add(key)
+      Promise.all(ms.flatMap(k => [load('c:' + k, '/summary/categories?month=' + k), load('i:' + k, '/summary/income?month=' + k)]))
+        .catch(e => { state.perr[key] = e.message }).finally(() => { inflight.delete(key); if (state.view === 'report' && state.month === m) render() })
+    }
+    return `${head}<section class="panel" style="margin-top:16px">${err ? `<div class="empty"><p><strong>Could not load the report</strong></p><p>${esc(err)}</p><p><button class="btn ghost" data-act="retryreport">Retry</button></p></div>` : '<div class="load" role="status">Loading…</div>'}</section>`
+  }
+  // rows: { label, f (transactions filter, null for a total), v: amount per month in ms }
+  const pivot = (p, name, f) => {
+    const by = new Map()
+    ms.forEach((k, i) => cache.get(p + k).forEach(r => { const n = name(r); if (!by.has(n)) by.set(n, { label: n, f: f(r), v: ms.map(() => 0) }); by.get(n).v[i] += r.amount }))
+    return [...by.values()].sort((a, b) => sum(b.v) - sum(a.v))
+  }
+  const sum = v => v.reduce((s, x) => s + x, 0), add = rows => ms.map((_, i) => rows.reduce((s, r) => s + r.v[i], 0))
+  let inc = pivot('i:', r => r.source, r => ({ flow: 'in', q: r.source }))
+  // ponytail: refunds and one-off deposits show up as sources; fold everything past the top 10 into one row
+  if (inc.length > 11) inc = [...inc.slice(0, 10), { label: `${inc.length - 10} other sources`, f: { flow: 'in' }, v: add(inc.slice(10)) }]
+  const exp = pivot('c:', r => catName(r.category), r => ({ cat: r.category === '' ? '__none' : r.category }))
+  const incT = add(inc), expT = add(exp), net = incT.map((x, i) => x - expT[i])
+  repCells = []
+  const cell = (v, f, month) => { if (!v || !f) return `<td>${v ? usd0(v) : '<span class="muted">—</span>'}</td>`; repCells.push({ ...f, month }); return `<td><button class="cellbtn" data-act="repcell" data-i="${repCells.length - 1}">${usd0(v)}</button></td>` }
+  const row = (r, cls = '') => `<tr class="${cls}"><th scope="row">${esc(r.label)}</th>${r.v.map((v, i) => cell(v, r.f, ms[i])).join('')}<td>${usd0(Math.round(sum(r.v) / ms.length))}</td>${cell(sum(r.v), r.f, `${ms[0]}..${ms.at(-1)}`)}</tr>`
+  const section = (title, rows, total) => `<tr class="rsec"><th scope="rowgroup" colspan="${ms.length + 3}">${title}</th></tr>${rows.map(r => row(r)).join('')}${row({ label: `Total ${title.toLowerCase()}`, v: total }, 'rtot')}`
+  const line = r => [r.label, ...r.v, Math.round(sum(r.v) / ms.length), sum(r.v)]
+  repCSV = [['', ...ms, 'Average', 'Total'], ['Income'], ...inc.map(line), line({ label: 'Total income', v: incT }), ['Expenses'], ...exp.map(line), line({ label: 'Total expenses', v: expT }), line({ label: 'Net income', v: net })]
+  return `${head}
+  <div class="frow"><button class="btn ghost sm" data-act="repcsv" style="margin-left:auto">Export CSV</button></div>
+  <p class="sub">${esc(rangeLabel(ms))}${ms.includes(CUR) ? ` (${mShort(CUR)} is month to date)` : ''}. Same accounts as Spending: transfers, investment and loan accounts and pending transactions are left out. Click an amount to see its transactions. <a href="#spending">Back to Spending</a></p>
+  <section class="panel"><div class="tblwrap"><table class="invtbl reptbl"><thead><tr><th></th>${ms.map(k => `<th scope="col">${mShort(k)}${k.endsWith('-01') || k === ms[0] ? ` <small>${k.slice(0, 4)}</small>` : ''}</th>`).join('')}<th scope="col">Average</th><th scope="col">Total</th></tr></thead>
+   <tbody>${section('Income', inc, incT)}${section('Expenses', exp, expT)}</tbody>
+   <tfoot>${row({ label: 'Net income', v: net }, 'rtot')}</tfoot></table></div></section>`
+}
 
 /* ---------- Recurring ---------- */
 function recurring() {
@@ -1419,7 +1473,7 @@ document.addEventListener('keydown', e => {
 /* ---------- shell ---------- */
 const VIEWS = [['overview', 'Overview'], ['transactions', 'Transactions'], ['accounts', 'Accounts'], ['investments', 'Investments'], ['spending', 'Spending'], ['plan', 'Plan'], ['settings', 'Settings']]
 // Routes with no nav tab of their own; the tab of the view they belong to stays highlighted.
-const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'], alerts: ['transactions', 'Alerts'] }
+const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'], report: ['spending', 'Income v Expense'], alerts: ['transactions', 'Alerts'] }
 const validView = v => VIEWS.some(x => x[0] === v) || v in SUBVIEWS
 function paintNav() {
   const link = ([v, l]) => `<a href="#${v}" ${(SUBVIEWS[state.view]?.[0] || state.view) === v ? 'aria-current="page"' : ''}>${icon(v, 20)}<span>${l}</span></a>`
@@ -1436,7 +1490,7 @@ function paintNav() {
 function render(top) {
   const v = state.view, main = $('#main'), fid = v === 'plan' && document.activeElement?.id
   if (!state.loaded) main.innerHTML = state.err ? `<div class="panel first"><h1>Could not load</h1><p>${esc(state.err)}</p><button class="btn" data-act="reload">Retry</button></div>` : '<div class="load" role="status">Loading…</div>'
-  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring, alerts, plan }[v]()
+  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring, alerts, plan, report }[v]()
   paintNav()
   document.title = (VIEWS.find(x => x[0] === v)?.[1] || SUBVIEWS[v]?.[1] || 'Overview') + ' · Money Tracker'
   if (state.loaded && v === 'overview') { drawFlow(); drawNW(); drawCF(); const box = $('#flowbox'); if (box) flowEvents(box) }
@@ -1501,7 +1555,12 @@ document.addEventListener('click', e => {
   else if (a === 'signout') fetch('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json()).then(o => location.assign(o.redirect)).catch(() => {}) // auth
   else if (a === 'reload') { state.err = ''; reload() }
   else if (a === 'retryperiod') { delete state.perr[periodKey()]; render() }
-  else if (a === 'retryspend') { delete state.perr['s' + state.month]; render() }
+  else if (a === 'retryspend') { delete state.perr['s' + (state.spendBy === 'merchant' ? 'm:' : 'c:') + periodKey()]; render() }
+  else if (a === 'spendby') { state.spendBy = d.v; render() }
+  else if (a === 'spendcsv') downloadCSV(`spending-by-${state.spendBy || 'category'}-${periodKey()}.csv`, [[state.spendBy === 'merchant' ? 'Merchant' : 'Category', 'Amount'], ...spendRows.map(r => [r.name, r.v])])
+  else if (a === 'repcsv') downloadCSV(`income-v-expense-${state.month}.csv`, repCSV)
+  else if (a === 'retryreport') { delete state.perr['r' + state.month]; render() }
+  else if (a === 'repcell') { const { month, ...f } = repCells[+d.i]; state.f = { ...blankF(), month, ...f }; go('transactions') }
   else if (a === 'txclear') { state.f = blankF(); render() }
   else if (a === 'unflow') { state.f.flow = ''; render() }
   else if (a === 'txretry') fetchTx('reset')
@@ -1526,7 +1585,7 @@ document.addEventListener('click', e => {
     const redo = p => p.then(() => { D.alerts = null; return true }, e => { toast(e.message, { err: true }) }).finally(render)
     redo(send('POST', url, {})).then(ok => ok && toast(`Marked ${name} as fine.`, { undo: () => redo(send('DELETE', url)) }))
   }
-  else if (a === 'spendcat') { state.f = { ...blankF(), month: state.month, cat: spendRows[+d.i].raw === '' ? '__none' : spendRows[+d.i].raw }; go('transactions') }
+  else if (a === 'spendcat') { state.f = { ...blankF(), month: periodKey(), ...spendRows[+d.i].f }; go('transactions') }
   else if (a === 'sync') doSync()
   else if (a === 'rule1') { state.ruleDel = +d.id; render() }
   else if (a === 'ruleCancel') { state.ruleDel = null; render() }
