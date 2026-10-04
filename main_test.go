@@ -226,6 +226,7 @@ func TestLogRequests(t *testing.T) {
 	h := logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) }))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/investments?period=ytd", nil))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/index.html", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/health", nil))
 	var line struct {
 		Msg, Method, Path string
 		Status            int

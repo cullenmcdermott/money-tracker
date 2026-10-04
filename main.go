@@ -54,7 +54,7 @@ func apiError(w http.ResponseWriter, err error) {
 // in the logs while it is still hanging.
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/health" { // health: the kubelet probes it every few seconds
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -550,7 +550,8 @@ func main() {
 	if addr := os.Getenv("DEBUG_ADDR"); addr != "" {
 		go func() { slog.Error("debug server", "err", http.ListenAndServe(addr, nil)) }()
 	}
-	server := &http.Server{Addr: env("ADDR", ":8080"), Handler: otelhttp.NewHandler(logRequests(security(mustAuth(ctx, a.routes()))), "http"),
+	server := &http.Server{Addr: env("ADDR", ":8080"), Handler: otelhttp.NewHandler(logRequests(security(mustAuth(ctx, a.routes()))), "http",
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/api/health" })),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 		// POST /api/sync runs every item sync inline (30s per upstream request, several windows per item).
 		WriteTimeout: 10 * time.Minute}
