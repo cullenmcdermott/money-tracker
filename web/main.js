@@ -934,7 +934,7 @@ function plan() {
     <p class="cap">The rest starts from your data, or from defaults where there is none: retirement at ${D.defaults.retire_age}, Social Security of ${usd0(D.defaults.ss_monthly)} a month from ${D.defaults.ss_age}, a plan to age ${D.defaults.end_age}. You can change any of it.</p></section>`
   const dirty = planDirty(), P = dirty && PL.proj ? PL.proj.projection : D.projection, Dp = dirty && PL.proj ? PL.proj.data_projection : D.data_projection
   const changed = canon(v) !== canon({ birth_year: v.birth_year, events: v.events, vests: { off: v.vests?.off || undefined } })
-  const ra = v.retire_age ?? D.defaults.retire_age, end = v.end_age ?? D.defaults.end_age
+  const ra = v.retire_age ?? D.defaults.retire_age, end = v.end_age ?? D.defaults.end_age, age = new Date().getFullYear() - v.birth_year
   const at = (p, age) => (p.years.find(y => y.age === age) || p.years.at(-1)).assets
   const lasts = p => p.run_out ? `Runs out at ${p.run_out}` : `Past ${p.years.at(-1).age}`
   const accts = D.baseline.accounts, acc = id => v.accounts?.[id] || {}
@@ -944,7 +944,7 @@ function plan() {
     const src = fromData(k) ? `Average of your last ${D.baseline.months} month${D.baseline.months === 1 ? '' : 's'}` : 'Default'
     const note = ch ? `${saved ? 'Set by you.' : `Trying ${showVal(kind, cur)}.`} ${fromData(k) ? 'Your data' : 'Default'}: ${showVal(kind, base)}. <button class="linkbtn" data-act="knobreset" data-v="${k}">Use ${fromData(k) ? 'my data' : 'the default'}</button>` : src + '.'
     const input = privacy.on && kind === 'money' ? '<span class="muted">$•••</span>'
-      : k === 'retire_age' ? `<input id="kn-${k}" type="range" min="40" max="80" step="1" value="${cur}" data-knob="${k}" data-kind="${kind}">`
+      : k === 'retire_age' ? `<input id="kn-${k}" type="range" min="${age}" max="${Math.max(80, age)}" step="1" value="${cur}" data-knob="${k}" data-kind="${kind}">`
       : `<input id="kn-${k}" type="number" step="${kind === 'money' ? 100 : kind === 'pct' ? 0.5 : 1}" value="${kind === 'money' ? Math.round(cur / 100) : cur}" data-knob="${k}" data-kind="${kind}" inputmode="decimal">`
     return `<div class="knob${k === 'retire_age' ? ' wide' : ''}${ch ? ' chg' : ''}"><label for="kn-${k}">${label}${k === 'retire_age' ? `: <b id="ra-v">${cur}</b>` : ''}</label>${input}<div class="src">${note}</div></div>`
   }
@@ -990,7 +990,7 @@ function plan() {
       <p class="cap">Added a year starts from deposits from outside your accounts in the last ${D.baseline.months} months (payroll, vests); transfers from your own accounts are already part of your surplus. Growth is before inflation. Cards, loans and property are left out unless you include them.</p></details>
     <details class="psec" ${PL.open?.events ? 'open' : ''} data-sec="events"><summary>Events <span class="muted">${evs.length + (vestOn ? 1 : 0)} in the plan</span></summary>
       ${evs.map(e => `<div class="pev"><span class="y">${e.year}</span><span class="d">${evText(e)}</span>${e.fixed ? '<span class="muted" style="font-size:12px">Set in your numbers</span>' : `<button class="linkbtn" data-act="evedit" data-i="${e.i}">Edit</button><button class="linkbtn" data-act="evdel" data-i="${e.i}">Remove</button>`}</div>`).join('')}
-      ${D.baseline.unvested > 0 ? `<div class="pev"><span class="y">${new Date().getFullYear()}</span><span class="d">${vestOn ? `Unvested stock, ${usd0(D.baseline.unvested)} at the last sync, paid out over ${v.vests?.years ?? D.defaults.vest_years} years at ${v.vests?.after_tax_pct ?? D.defaults.vest_after_tax_pct}% after tax` : '<span class="muted">Unvested stock is left out</span>'}</span><button class="linkbtn" data-act="vests">${vestOn ? 'Leave out' : 'Add back'}</button></div>` : ''}
+      ${D.baseline.unvested > 0 ? `<div class="pev"><span class="y">${new Date().getFullYear()}</span><span class="d">${vestOn ? `Unvested stock, ${usd0(D.baseline.unvested)} at the last sync, paid out over ${v.vests?.years ?? D.defaults.vest_years} years at ${v.vests?.after_tax_pct ?? D.defaults.vest_after_tax_pct}% after tax while you're working; what hasn't vested by retirement is forfeited` : '<span class="muted">Unvested stock is left out</span>'}</span><button class="linkbtn" data-act="vests">${vestOn ? 'Leave out' : 'Add back'}</button></div>` : ''}
       <form class="evform" data-planform="event">
         <label>Kind<select name="kind">${[['expense', 'One-time expense'], ['income', 'One-time income'], ['spending', 'Spending change a year'], ['earning', 'Income change a year']].map(([k, l]) => `<option value="${k}" ${E.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label>Name<input name="name" value="${esc(E.name)}" placeholder="New roof" maxlength="80" required></label>

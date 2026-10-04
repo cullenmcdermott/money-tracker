@@ -164,6 +164,27 @@ func TestProjectScenarios(t *testing.T) {
 			t.Errorf("%d income = %d, want %d", y.Year, y.Income, want)
 		}
 	}
+	// Retiring now, at 46, stops pay, contributions and vests at once: what hasn't vested is forfeited.
+	in = planCase(46, projAccount{ID: "k", Bucket: "pretax", Balance: 10000000, Contribution: 600000, PenaltyFreeAge: 59.5})
+	in.EndAge, in.Income, in.Vests = 47, 1000000, planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 50}
+	for _, y := range func() []planYear { y, _ := project(in); return y }() {
+		if y.Income != 0 || y.Contributions != 0 {
+			t.Errorf("%d retired: income %d, contributions %d", y.Year, y.Income, y.Contributions)
+		}
+	}
+	// Retiring at 48 keeps the first two years of vests.
+	in.RetireAge = 48
+	in.EndAge = 49
+	years, _ = project(in)
+	for i, y := range years {
+		want := int64(0)
+		if i < 2 {
+			want = 12000000 + 500000
+		}
+		if y.Income != want {
+			t.Errorf("%d income = %d, want %d", y.Year, y.Income, want)
+		}
+	}
 }
 
 func TestPlanAPI(t *testing.T) {

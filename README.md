@@ -123,7 +123,7 @@ The Plan page projects the money in your cash and investment accounts year by ye
 - **Balances:** each account's current balance. Checking, savings and investment accounts are in; cards, loans and property are out unless you include them.
 - **Added a year:** each investment account's deposits from outside your own accounts over those months (payroll, vests). Transfers from checking are already part of the surplus.
 - **Kind and growth:** guessed from the account's name (Roth; 401(k), 403(b), IRA, HSA and the like as pre-tax; other investments as taxable; deposit accounts as cash), growing 7% a year for investments, 2% for savings and 0% for other cash.
-- **Unvested stock:** paid out evenly over 4 years at 65% after tax, from the Investments page's unvested total.
+- **Unvested stock:** paid out evenly over 4 years at 65% after tax, from the Investments page's unvested total, until you retire; what hasn't vested by then is forfeited.
 
 Where there is no data, it uses defaults close to Monarch's: retirement at 65, spending in retirement at 100% of today's plus $6,500 a year, Social Security of $2,000 a month from 67, 3% inflation, a plan to age 90. Shortfalls are withdrawn from extra savings, then cash, taxable, pre-tax and Roth accounts, with flat taxes (12%, 20%, 0%) and a 10% penalty on pre-tax and Roth withdrawals before 59½ (65 for an HSA).
 

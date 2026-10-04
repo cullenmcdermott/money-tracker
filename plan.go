@@ -171,7 +171,7 @@ type projAccount struct {
 }
 
 type planVestsIn struct {
-	Total       int64   // unvested stock, paid out evenly over Years from the start year
+	Total       int64   // unvested stock, paid out evenly over Years from the start year; what is left at retirement is forfeited
 	Years       int     //
 	AfterTaxPct float64 //
 }
@@ -257,7 +257,7 @@ func project(in planInputs) (years []planYear, runOut int) {
 				py.Income += e.Amount
 			}
 		}
-		if v := in.Vests; v.Years > 0 && y < in.StartYear+v.Years {
+		if v := in.Vests; working && v.Years > 0 && y < in.StartYear+v.Years {
 			py.Income += int64(math.Round(float64(v.Total) * v.AfterTaxPct / 100 / float64(v.Years)))
 		}
 		for _, p := range pots {
