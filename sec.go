@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -117,7 +118,7 @@ func nportSplit(ctx context.Context, seriesID string) (split [5]int, filed strin
 	var feed struct {
 		Entries []filing `xml:"entry"`
 	}
-	if err := xml.Unmarshal(body, &feed); err != nil {
+	if err := secXML(body, &feed); err != nil {
 		return split, "", err
 	}
 	if len(feed.Entries) == 0 {
@@ -141,7 +142,7 @@ func nportSplit(ctx context.Context, seriesID string) (split [5]int, filed strin
 			Country string `xml:"invCountry"`
 		} `xml:"formData>invstOrSecs>invstOrSec"`
 	}
-	if err := xml.Unmarshal(body, &doc); err != nil {
+	if err := secXML(body, &doc); err != nil {
 		return split, "", err
 	}
 	var pct [5]float64
@@ -163,6 +164,23 @@ func nportSplit(ctx context.Context, seriesID string) (split [5]int, filed strin
 	}
 	split, err = toBasisPoints(pct)
 	return split, newest.Date, err
+}
+
+// secXML decodes EDGAR XML, whose Atom feeds declare ISO-8859-1 (Latin-1 bytes are their own code points).
+func secXML(body []byte, v any) error {
+	d := xml.NewDecoder(bytes.NewReader(body))
+	d.CharsetReader = func(label string, r io.Reader) (io.Reader, error) {
+		if !strings.EqualFold(label, "ISO-8859-1") {
+			return nil, fmt.Errorf("unsupported charset %q", label)
+		}
+		b, err := io.ReadAll(r)
+		runes := make([]rune, len(b))
+		for i, c := range b {
+			runes[i] = rune(c)
+		}
+		return strings.NewReader(string(runes)), err
+	}
+	return d.Decode(v)
 }
 
 // toBasisPoints scales class totals to 10000, dropping net-short classes and giving the rounding to the largest.

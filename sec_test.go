@@ -31,7 +31,7 @@ func fakeSEC(t *testing.T) *[]string {
 				fmt.Fprint(w, `<feed xmlns="http://www.w3.org/2005/Atom"></feed>`)
 				return
 			}
-			fmt.Fprintf(w, `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+			fmt.Fprintf(w, `<?xml version="1.0" encoding="ISO-8859-1" ?><feed xmlns="http://www.w3.org/2005/Atom">
 				<entry><content type="text/xml"><filing-date>2026-05-28</filing-date><filing-href>%[1]s/Archives/edgar/data/1001/000100126000001/0001001-26-000001-index.htm</filing-href></content></entry>
 				<entry><content type="text/xml"><filing-date>2026-08-27</filing-date><filing-href>%[1]s/Archives/edgar/data/1001/000100126000002/0001001-26-000002-index.htm</filing-href></content></entry>
 				</feed>`, srv.URL)
