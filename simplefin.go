@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/codes"
 )
 
 var errInvalidSetupToken = errors.New("invalid setup token")
@@ -55,6 +58,9 @@ func (p *syncProgress) set(stage string, done, total int) {
 	if !p.state.Running {
 		p.state = syncState{Running: true, StartedAt: time.Now().UTC()}
 	}
+	if stage != p.state.Stage {
+		slog.Info("sync stage", "stage", stage, "elapsed_ms", time.Since(p.state.StartedAt).Milliseconds())
+	}
 	p.state.Stage, p.state.Done, p.state.Total = stage, done, total
 }
 
@@ -64,6 +70,9 @@ func (p *syncProgress) finish() {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.state.Running {
+		slog.Info("sync finished", "ms", time.Since(p.state.StartedAt).Milliseconds())
+	}
 	p.state = syncState{}
 }
 
@@ -103,7 +112,14 @@ func (a *app) ensureSimplefinItem() error {
 }
 
 // syncSimplefin syncs from the env access URL and records last_synced_at / last_error on the connection row.
-func (a *app) syncSimplefin(ctx context.Context) error {
+func (a *app) syncSimplefin(ctx context.Context) (err error) {
+	ctx, span := tracer.Start(ctx, "sync")
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, err.Error()) // already redacted
+		}
+		span.End()
+	}()
 	defer a.simplefin.progress.finish()
 	warning, err := a.simplefin.syncItem(ctx, a.db, simplefinItemID, a.simplefin.accessURL)
 	if err != nil {

@@ -8,14 +8,19 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	_ "net/http/pprof" // served only on DEBUG_ADDR, never on the app mux
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 //go:embed all:web/dist
@@ -44,6 +49,38 @@ func apiError(w http.ResponseWriter, err error) {
 	log.Printf("api error: %v", err) // never echo internal errors to clients
 	jsonResponse(w, http.StatusBadGateway, map[string]string{"error": "upstream request failed"})
 }
+
+// logRequests logs each API request with its status and duration, and warns once one has run 10s so a hang shows
+// in the logs while it is still hanging.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		attrs := []any{"method", r.Method, "path", r.URL.Path}
+		if sc := trace.SpanContextFromContext(r.Context()); sc.HasTraceID() {
+			attrs = append(attrs, "trace_id", sc.TraceID().String())
+		}
+		slow := time.AfterFunc(10*time.Second, func() { slog.Warn("request still running", attrs...) })
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		slow.Stop()
+		slog.Info("request", append(attrs, "status", rec.status, "ms", time.Since(start).Milliseconds())...)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter } // for http.ResponseController
 
 func decode(w http.ResponseWriter, r *http.Request, value any) bool {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(value); err != nil {
@@ -432,10 +469,23 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "simplefin-claim" {
 		os.Exit(runSimplefinClaim(os.Stdin, os.Stdout, os.Stderr, simplefinClient{}))
 	}
+	// JSON logs; log.Printf calls go through it too. LOG_LEVEL=debug for more.
+	var level slog.Level
+	_ = level.UnmarshalText([]byte(env("LOG_LEVEL", "info")))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 	sf, err := simplefinFromEnv(os.Getenv("SIMPLEFIN_ACCESS_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
+	shutdownTracing, err := setupTracing(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx) // flushes spans still batched
+	}()
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required (e.g. postgres://user:pass@localhost:5432/money?sslmode=disable); `just pg` starts a local one")
@@ -495,7 +545,12 @@ func main() {
 			}
 		}
 	}()
-	server := &http.Server{Addr: env("ADDR", ":8080"), Handler: security(mustAuth(ctx, a.routes())),
+	// Opt-in Go profiler (goroutine dumps show where a hang is stuck). Unauthenticated: bind it to localhost and
+	// reach it with a port-forward, e.g. DEBUG_ADDR=localhost:6060, then /debug/pprof/goroutine?debug=2.
+	if addr := os.Getenv("DEBUG_ADDR"); addr != "" {
+		go func() { slog.Error("debug server", "err", http.ListenAndServe(addr, nil)) }()
+	}
+	server := &http.Server{Addr: env("ADDR", ":8080"), Handler: otelhttp.NewHandler(logRequests(security(mustAuth(ctx, a.routes()))), "http"),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 		// POST /api/sync runs every item sync inline (30s per upstream request, several windows per item).
 		WriteTimeout: 10 * time.Minute}

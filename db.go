@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/exaring/otelpgx"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
@@ -20,10 +22,12 @@ var migrations embed.FS
 
 // openDB connects to Postgres, applies pending migrations, and backfills merchant keys.
 func openDB(databaseURL string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", databaseURL)
+	cfg, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, err
 	}
+	cfg.Tracer = otelpgx.NewTracer() // statements only, never their parameters; a no-op unless tracing is set up
+	db := stdlib.OpenDB(*cfg)
 	ctx := context.Background()
 	if err = db.PingContext(ctx); err == nil {
 		err = migrate(db)

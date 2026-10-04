@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io/fs"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -213,5 +216,24 @@ func TestCashflowCountsOnlyCashAccountsAndReportsInvested(t *testing.T) {
 	invested, err := (&app{db: db}).investedByMonth(context.Background())
 	if err != nil || invested["2026-09"] != -40000 {
 		t.Errorf("September invested = %d, %v; want -40000", invested["2026-09"], err)
+	}
+}
+
+func TestLogRequests(t *testing.T) {
+	var buf bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	h := logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/investments?period=ytd", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/index.html", nil))
+	var line struct {
+		Msg, Method, Path string
+		Status            int
+	}
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil || line != (struct {
+		Msg, Method, Path string
+		Status            int
+	}{"request", "GET", "/api/investments", 418}) {
+		t.Fatalf("logged %q (%v), want one request line for the API call with its status", buf.String(), err)
 	}
 }
