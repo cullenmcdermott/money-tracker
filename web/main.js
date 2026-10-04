@@ -821,7 +821,7 @@ const classLabel = c => {
   return `${what}<br><small class="muted">From ${from}</small>`
 }
 function holdingsHTML(list) {
-  const held = list.filter(a => a.positions?.length || a.unvested)
+  const held = list.filter(a => a.positions?.length || a.unvested).map(a => ({ ...a, positions: a.positions || [] })) // none sent when an account holds only unvested awards
   if (!held.length) return ''
   const al = Object.fromEntries([...CLASSES.map(([k]) => k), 'unclassified'].map(k => [k, held.reduce((s, a) => s + a.allocation[k], 0)]))
   const total = Object.values(al).reduce((s, v) => s + v, 0) || 1
