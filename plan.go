@@ -49,6 +49,7 @@ type planBaseline struct {
 	Spending int64 `json:"spending_monthly"`
 	Interest int64 `json:"interest_monthly"`
 	Unvested int64 `json:"unvested"`
+	Paired   int64 `json:"paired"` // a year moved between cash and investment accounts without matching as a transfer
 	// The largest sources behind Income, a year each, so the owner can spot money that came from their own
 	// accounts (an untracked brokerage, say) and mark it as a transfer.
 	IncomeSources []planSource     `json:"income_sources"`
@@ -117,17 +118,18 @@ func guessPlanAccount(ac *planAccount, avg int64) {
 type contribRow struct {
 	account, date, name string
 	amount              int64
+	id                  string
 }
 
 // classifyContributions sorts each account's contributions dated from on into deposits, ESPP, RSU, unclear
 // and internal, as totals over the window. rows run in date order and may start before from, so a share sale
 // early in the window still finds the vest or purchase it came from.
-func classifyContributions(rows []contribRow, from string) (sums map[string]*planAccount, unclear []planEquitySale) {
+func classifyContributions(rows []contribRow, from string, paired map[string]bool) (sums map[string]*planAccount, unclear []planEquitySale) {
 	sums = map[string]*planAccount{}
 	// The dates of each account's $0 deposits by kind, over all history.
 	deps := map[string]map[string][]string{}
 	for _, r := range rows {
-		if internalName.MatchString(r.name) {
+		if internalName.MatchString(r.name) || paired[r.id] {
 			continue
 		}
 		k := ""
@@ -154,7 +156,7 @@ func classifyContributions(rows []contribRow, from string) (sums map[string]*pla
 	for _, r := range rows {
 		kind := "deposit"
 		switch {
-		case internalName.MatchString(r.name):
+		case internalName.MatchString(r.name), paired[r.id]:
 			kind = "internal"
 		case esppName.MatchString(r.name):
 			kind = "espp"
@@ -201,6 +203,81 @@ func classifyContributions(rows []contribRow, from string) (sums map[string]*pla
 	return sums, unclear
 }
 
+// planPairs pairs transactions the transfer matcher missed: one in a cash account (depository, credit) and one in
+// an investment account, opposite amounts, up to 10 days apart. They return the ids paired and the cash side's
+// total (positive) dated in [from, to). Like matchTransfers it is greedy: each outflow, in date order, takes the
+// closest unused inflow. It only keeps the plan from counting a move twice; transfer_id is not set.
+// ponytail: 10 days (matchTransfers uses 5) is wider because a wrong pair here only drops money from the plan's
+// averages; widen it if real moves land later.
+func (a *app) planPairs(ctx context.Context, from, to string) (map[string]bool, int64, error) {
+	const days = 10
+	f, _ := time.Parse(time.DateOnly, from)
+	t, _ := time.Parse(time.DateOnly, to)
+	rows, err := a.db.QueryContext(ctx, `SELECT t.id,t.date,t.amount,a.type IN ('depository','credit') FROM transactions t JOIN accounts a ON a.id=t.account_id
+		WHERE t.transfer_id IS NULL AND NOT t.pending AND t.amount<>0 AND a.type IN ('depository','credit','investment','other') AND t.date>=$1 AND t.date<$2 ORDER BY t.date,t.id`,
+		f.AddDate(0, 0, -days).Format(time.DateOnly), t.AddDate(0, 0, days).Format(time.DateOnly))
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	type tx struct {
+		id     string
+		date   time.Time
+		amount int64
+		cash   bool
+	}
+	var all []tx
+	for rows.Next() {
+		var x tx
+		var d string
+		if err := rows.Scan(&x.id, &d, &x.amount, &x.cash); err != nil {
+			return nil, 0, err
+		}
+		if x.date, err = time.Parse(time.DateOnly, d); err != nil {
+			return nil, 0, err
+		}
+		all = append(all, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	inflows := map[int64][]int{}
+	for i, x := range all {
+		if x.amount > 0 {
+			inflows[x.amount] = append(inflows[x.amount], i)
+		}
+	}
+	paired, moved := map[string]bool{}, int64(0)
+	for _, o := range all {
+		if o.amount > 0 || paired[o.id] {
+			continue
+		}
+		best := -1
+		for _, i := range inflows[-o.amount] {
+			c := all[i]
+			gap := c.date.Sub(o.date).Abs()
+			if c.cash == o.cash || paired[c.id] || gap > days*24*time.Hour {
+				continue
+			}
+			if best < 0 || gap < all[best].date.Sub(o.date).Abs() {
+				best = i
+			}
+		}
+		if best < 0 {
+			continue
+		}
+		paired[o.id], paired[all[best].id] = true, true
+		c := o
+		if !o.cash {
+			c = all[best]
+		}
+		if !c.date.Before(f) && c.date.Before(t) {
+			moved += max(c.amount, -c.amount)
+		}
+	}
+	return paired, moved, nil
+}
+
 func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, error) {
 	b := planBaseline{Accounts: []planAccount{}, IncomeSources: []planSource{}, UnclearSales: []planEquitySale{}}
 	cur := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -214,24 +291,31 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 	}
 	from, to := cur.AddDate(0, -max(b.Months, 0), 0).Format(time.DateOnly), cur.Format(time.DateOnly)
 	yearly := func(sum int64) int64 { return sum * 12 / int64(max(b.Months, 1)) }
-	var in int64
+	var in, moved int64
+	var paired map[string]bool
 	bySource := map[string]*planSource{}
 	// Interest paid into each account by source: it's left out of income when the account's growth carries it.
 	interest := map[string]map[string]*planSource{}
 	if b.Months > 0 {
-		rows, err := a.db.QueryContext(ctx, `SELECT account_id,amount,COALESCE(NULLIF(merchant,''),name) FROM cashflow WHERE date>=$1 AND date<$2`, from, to)
+		var err error
+		if paired, moved, err = a.planPairs(ctx, from, to); err != nil {
+			return b, err
+		}
+		b.Paired = yearly(moved)
+		rows, err := a.db.QueryContext(ctx, `SELECT id,account_id,amount,COALESCE(NULLIF(merchant,''),name) FROM cashflow WHERE date>=$1 AND date<$2`, from, to)
 		if err != nil {
 			return b, err
 		}
 		var out int64
 		for rows.Next() {
-			var acct, name string
+			var id, acct, name string
 			var amount int64
-			if err := rows.Scan(&acct, &amount, &name); err != nil {
+			if err := rows.Scan(&id, &acct, &amount, &name); err != nil {
 				rows.Close()
 				return b, err
 			}
 			switch {
+			case paired[id]:
 			case amount < 0:
 				out -= amount
 			case interestName.MatchString(name):
@@ -272,14 +356,14 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 	// Contributions that came from outside the owner's accounts (payroll, ESPP); a matched transfer from checking
 	// is already counted as cash-flow surplus. All history is read so a sale can find its vest or purchase.
 	var crows []contribRow
-	rows, err := a.db.QueryContext(ctx, `SELECT ia.account_id,ia.date,ia.name,ia.amount FROM investment_activity ia JOIN transactions t ON t.id=ia.id
+	rows, err := a.db.QueryContext(ctx, `SELECT ia.account_id,ia.date,ia.name,ia.amount,ia.id FROM investment_activity ia JOIN transactions t ON t.id=ia.id
 		WHERE ia.kind='contribution' AND t.transfer_id IS NULL AND ia.date<$1 ORDER BY ia.account_id,ia.date,ia.id`, to)
 	if err != nil {
 		return b, err
 	}
 	for rows.Next() {
 		var r contribRow
-		if err := rows.Scan(&r.account, &r.date, &r.name, &r.amount); err != nil {
+		if err := rows.Scan(&r.account, &r.date, &r.name, &r.amount, &r.id); err != nil {
 			rows.Close()
 			return b, err
 		}
@@ -291,7 +375,7 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 	}
 	sums, unclear := map[string]*planAccount{}, []planEquitySale(nil)
 	if b.Months > 0 {
-		sums, unclear = classifyContributions(crows, from)
+		sums, unclear = classifyContributions(crows, from, paired)
 	}
 	b.UnclearSales = append(b.UnclearSales, unclear...)
 	rows, err = a.db.QueryContext(ctx, `SELECT id,name,institution,type,COALESCE(current,0) FROM accounts ORDER BY institution,name`)

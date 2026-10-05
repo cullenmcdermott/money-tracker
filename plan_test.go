@@ -121,10 +121,10 @@ func TestPlanBaseline(t *testing.T) {
 func TestClassifySales(t *testing.T) {
 	const lapse, espp, sale = "RESTRICTED STOCK LAPSE", "EMPLOYEE STOCK PURCHASE PLAN DEPOSIT", "SHARESALE"
 	kindOf := func(rows ...contribRow) (s planAccount, unclear int) {
-		sums, u := classifyContributions(rows, "2025-01-01")
+		sums, u := classifyContributions(rows, "2025-01-01", nil)
 		return *sums["a"], len(u)
 	}
-	row := func(date, name string, amount int64) contribRow { return contribRow{"a", date, name, amount} }
+	row := func(date, name string, amount int64) contribRow { return contribRow{"a", date, name, amount, ""} }
 	// Both kinds in the account: a sale far from the lapse and the purchase is left out and listed.
 	if s, u := kindOf(row("2025-11-15", lapse, 0), row("2025-11-30", espp, 0), row("2025-12-10", sale, 100)); u != 1 || s.ESPP != 0 || s.RSU != 0 || s.Unclear != 100 {
 		t.Errorf("sale 10 days after the purchase and 25 after the lapse: %+v, %d unclear", s, u)
@@ -500,4 +500,47 @@ func TestGoals(t *testing.T) {
 	a.call(t, "POST", "/api/goals", map[string]any{"name": "Car", "target": 100, "accounts": []map[string]any{{"account_id": "sav", "pct": 60}}}, 200, nil)
 	a.call(t, "POST", "/api/goals", map[string]any{"name": "", "target": 100}, 400, nil)
 	a.call(t, "POST", "/api/goals", map[string]any{"name": "Both", "target": 100, "target_months": 2}, 400, nil)
+}
+
+// Moves between cash and investment accounts that matchTransfers missed (too far apart) are left out of the
+// baseline, on both sides.
+func TestPlanPaired(t *testing.T) {
+	a, today := planApp(t)
+	if _, err := a.db.Exec(`INSERT INTO accounts(id,item_id,name,guessed_type,current) VALUES('stock','item','Equity Awards','investment',500000);
+		INSERT INTO transactions(id,account_id,date,amount,name,user_category) VALUES
+			('xfer-out','chk','2026-06-20',-50000,'ONLINE TRANSFER','Transfer'),
+			('xfer-in','brk','2026-06-28',50000,'FUNDS RECEIVED',''),
+			('proceeds-out','stock','2026-07-01',-1000000,'WIRE TO BANK',''),
+			('proceeds-in','chk','2026-07-07',1000000,'WIRE FROM BROKER',''),
+			('refund','chk','2026-07-09',50000,'REFUND',''),
+			('far-out','chk','2026-08-01',-70000,'ONLINE TRANSFER','Transfer'),
+			('far-in','brk','2026-08-12',70000,'FUNDS RECEIVED','')`); err != nil {
+		t.Fatal(err)
+	}
+	b, err := a.planBaseline(context.Background(), today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// $5,000 payroll, $500 refund and $3,000 spending a month stay; the paired $10,000 proceeds are not income.
+	if b.Income != 500000+50000/5 || b.Spending != 300000 || b.Paired != (50000+1000000)*12/5 {
+		t.Errorf("income %d, spending %d, paired %d", b.Income, b.Spending, b.Paired)
+	}
+	for _, ac := range b.Accounts {
+		// The 11-day gap is too wide: that deposit stays a contribution.
+		if want := int64(70000 * 12 / 5); ac.ID == "brk" && ac.Deposits != want {
+			t.Errorf("brk deposits = %d, want %d", ac.Deposits, want)
+		}
+	}
+	// A deposit with no investment partner is not paired; with two candidates the closer one wins, once each.
+	if _, err := a.db.Exec(`INSERT INTO transactions(id,account_id,date,amount,name) VALUES
+		('o1','chk','2026-06-01',-9900,'X'),('o2','chk','2026-06-02',-9900,'X'),('i1','brk','2026-06-03',9900,'X'),('i2','brk','2026-06-09',9900,'X')`); err != nil {
+		t.Fatal(err)
+	}
+	p, moved, err := a.planPairs(context.Background(), "2026-06-01", "2026-07-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p["o1"] || !p["i1"] || !p["o2"] || !p["i2"] || p["refund"] || moved != 50000+2*9900 {
+		t.Errorf("pairs = %v, moved %d", p, moved)
+	}
 }

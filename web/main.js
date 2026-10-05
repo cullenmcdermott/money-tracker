@@ -1029,6 +1029,7 @@ function sourcesHTML(P, accts) {
   const left = []
   if (rsu) left.push(`${usd0(rsu)} a year of RSU sales: ${B.unvested > 0 ? 'future vests come from your unvested stock instead, so they count once' : 'your brokerage doesn’t report unvested stock, so no future vests are in the plan. Add an income event if you expect more'}.`)
   if (internal) left.push(`${usd0(internal)} a year moved between your own accounts (journals, Roth conversions, withdrawals): not new money.`)
+  if (B.paired) left.push(`${usd0(B.paired)} a year moved between your cash and investment accounts that wasn’t matched as a transfer (up to 10 days apart): left out of income, spending and contributions.`)
   if (B.interest_monthly) left.push(`${usd0(B.interest_monthly * 12)} a year of interest paid into your deposit accounts: it’s their growth, so it isn’t income too.`)
   const unclear = B.unclear_sales.map(u => `${u.date} ${esc(name(u.account_id))}: ${usd0(u.amount)}`).join(' · ')
   const yr = P.years[0]?.year
