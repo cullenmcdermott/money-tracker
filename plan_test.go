@@ -54,7 +54,7 @@ func TestPlanBaseline(t *testing.T) {
 	if _, err := a.db.Exec(`INSERT INTO accounts(id,item_id,name,guessed_type,current) VALUES('stock','item','Equity Awards','investment',500000),
 			('odd','item','Fabrikam Shares','investment',100000);
 		INSERT INTO transactions(id,account_id,date,amount,name) VALUES
-			('lapse','stock','2026-03-20',0,'RESTRICTED STOCK LAPSE'),('rsu-sale','stock','2026-04-02',600000,'SHARESALE'),
+			('lapse','stock','2026-03-30',0,'RESTRICTED STOCK LAPSE'),('rsu-sale','stock','2026-04-02',600000,'SHARESALE'),
 			('espp','stock','2026-05-15',0,'EMPLOYEE STOCK PURCHASE PLAN DEPOSIT'),('espp-sale','stock','2026-05-20',300000,'SHARESALE'),
 			('jto','stock','2026-05-21',-900000,'Journal To Account XY99'),('jfrm','brk','2026-05-22',900000,'JOURNAL FRM ...999'),
 			('conv','roth','2026-06-01',700000,'Conversion (incoming)'),('odd-sale','odd','2026-06-03',200000,'SHARESALE'),
@@ -115,6 +115,82 @@ func TestPlanBaseline(t *testing.T) {
 	}
 	if len(b.Accounts) != len(want) {
 		t.Errorf("accounts = %d", len(b.Accounts))
+	}
+}
+
+func TestClassifySales(t *testing.T) {
+	const lapse, espp, sale = "RESTRICTED STOCK LAPSE", "EMPLOYEE STOCK PURCHASE PLAN DEPOSIT", "SHARESALE"
+	kindOf := func(rows ...contribRow) (s planAccount, unclear int) {
+		sums, u := classifyContributions(rows, "2025-01-01")
+		return *sums["a"], len(u)
+	}
+	row := func(date, name string, amount int64) contribRow { return contribRow{"a", date, name, amount} }
+	// Both kinds in the account: a sale far from the lapse and the purchase is left out and listed.
+	if s, u := kindOf(row("2025-11-15", lapse, 0), row("2025-11-30", espp, 0), row("2025-12-10", sale, 100)); u != 1 || s.ESPP != 0 || s.RSU != 0 || s.Unclear != 100 {
+		t.Errorf("sale 10 days after the purchase and 25 after the lapse: %+v, %d unclear", s, u)
+	}
+	// Two days after a lapse, with no purchase in the week: RSU.
+	if s, u := kindOf(row("2025-11-15", lapse, 0), row("2025-11-30", espp, 0), row("2025-11-17", sale, 100)); u != 0 || s.RSU != 100 {
+		t.Errorf("sale after a lapse: %+v, %d unclear", s, u)
+	}
+	// Deposits of both kinds in the week: can't tell.
+	if s, u := kindOf(row("2025-11-15", lapse, 0), row("2025-11-16", espp, 0), row("2025-11-17", sale, 100)); u != 1 || s.Unclear != 100 {
+		t.Errorf("sale after both: %+v, %d unclear", s, u)
+	}
+	// A sale ordered before its same-day deposit still finds it.
+	if s, u := kindOf(row("2025-10-01", lapse, 0), row("2025-12-10", sale, 100), row("2025-12-10", espp, 0)); u != 0 || s.ESPP != 100 {
+		t.Errorf("same-day purchase: %+v, %d unclear", s, u)
+	}
+	// One kind only: the sale is that kind however long after; no deposits at all: unclear.
+	if s, u := kindOf(row("2025-03-01", lapse, 0), row("2025-12-10", sale, 100)); u != 0 || s.RSU != 100 {
+		t.Errorf("only RSU: %+v, %d unclear", s, u)
+	}
+	if s, u := kindOf(row("2025-03-01", espp, 0), row("2025-12-10", sale, 100)); u != 0 || s.ESPP != 100 {
+		t.Errorf("only ESPP: %+v, %d unclear", s, u)
+	}
+	if _, u := kindOf(row("2025-12-10", sale, 100)); u != 1 {
+		t.Errorf("no deposits: %d unclear", u)
+	}
+}
+
+func TestPlanInterestGrowth(t *testing.T) {
+	a, today := planApp(t)
+	// Savings earned $2,000 over the five months on an average of $100,000, then was drawn to $38,000: 4.8% a
+	// year, not 12.6% of what is left. Checking's "dividend" and a savings account's $1,000 on $10,000 are above
+	// any cash rate: they stay income, and the savings account keeps its default 2%.
+	if _, err := a.db.Exec(`INSERT INTO accounts(id,item_id,name,guessed_type,current) VALUES('sav2','item','Old Savings','depository',1000000);
+		INSERT INTO transactions(id,account_id,date,amount,name) VALUES
+			('si','sav','2026-06-30',200000,'INTEREST PAYMENT'),('div','chk','2026-07-31',500000,'DIVIDEND'),
+			('si2','sav2','2026-06-30',100000,'INTEREST PAYMENT')`); err != nil {
+		t.Fatal(err)
+	}
+	for d, bal := range map[string]int{"2026-04-10": 12000000, "2026-06-10": 10000000, "2026-08-10": 8000000, "2026-03-31": 100} { // the last is before the window
+		if _, err := a.db.Exec(`INSERT INTO balances(account_id,date,current) VALUES('sav',$1,$2)`, d, bal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := a.planBaseline(context.Background(), today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct {
+		interest int64
+		growth   float64
+	}{"sav": {200000 * 12 / 5, 5}, "sav2": {0, 2}, "chk": {0, 0}}
+	for _, ac := range b.Accounts {
+		if w, ok := want[ac.ID]; ok && (ac.Interest != w.interest || ac.Growth != w.growth) {
+			t.Errorf("%s interest %d growth %v, want %+v", ac.ID, ac.Interest, ac.Growth, w)
+		}
+	}
+	if b.Interest != 40000 || b.Income != (2500000+500000+100000)/5 {
+		t.Errorf("interest %d, income %d", b.Interest, b.Income)
+	}
+	got := map[string]planSource{}
+	for _, s := range b.IncomeSources {
+		got[s.Name] = s
+	}
+	if got["DIVIDEND"].Amount != 500000*12/5 || got["INTEREST PAYMENT"] != (planSource{"INTEREST PAYMENT", 100000 * 12 / 5, 1}) {
+		t.Errorf("income sources = %+v", b.IncomeSources)
 	}
 }
 

@@ -78,25 +78,26 @@ var (
 	interestName = regexp.MustCompile(`(?i)dividend|interest|bank int\b`)
 )
 
-// Contributions into investment accounts, by what their names say. Moves between the owner's own accounts
-// aren't new money; RSU vests and ESPP purchases arrive as $0 share deposits whose value enters with a later
-// share sale, which goes to the most recent of them in the same account.
+// Contributions into investment accounts, by what their names say; these mirror the words the
+// investment_activity view lets through as contributions. Moves between the owner's own accounts aren't new
+// money; RSU vests and ESPP purchases arrive as $0 share deposits whose value enters with a later share sale.
 var (
-	internalName = regexp.MustCompile(`(?i)journal|conversion|withdrawal|transfer`)
-	esppName     = regexp.MustCompile(`(?i)stock purchase|\bespp\b`)
-	rsuName      = regexp.MustCompile(`(?i)restricted ?stock|\brsus?\b|\blapse|\bvest|\brelease`)
-	saleName     = regexp.MustCompile(`(?i)share ?sale`)
+	internalName = regexp.MustCompile(`(?i)journal|conversion|withdrawal`)
+	esppName     = regexp.MustCompile(`(?i)stock purchase`)
+	rsuName      = regexp.MustCompile(`(?i)restricted stock`)
+	saleName     = regexp.MustCompile(`(?i)sharesale`)
 )
 
 // guessPlanAccount fills an account's defaults from its type and name: cash and investment accounts are in,
-// everything else (cards, loans, property) out. A cash account that pays interest grows at the rate it paid.
-func guessPlanAccount(ac *planAccount) {
+// everything else (cards, loans, property) out. A cash account that pays interest grows at the rate it paid on
+// its average balance, avg.
+func guessPlanAccount(ac *planAccount, avg int64) {
 	ac.Include = ac.Type == "depository" || ac.Type == "investment"
 	ac.Bucket, ac.Growth, ac.PenaltyFreeAge = "cash", 0, 59.5
 	switch {
 	case ac.Type != "investment":
-		if ac.Interest > 0 && ac.Balance > 0 {
-			ac.Growth = min(10, math.Round(float64(ac.Interest)/float64(ac.Balance)*200)/2)
+		if ac.Interest > 0 && avg > 0 {
+			ac.Growth = math.Round(float64(ac.Interest)/float64(avg)*200) / 2
 		} else if ac.Interest == 0 && savingName.MatchString(ac.Name) {
 			ac.Growth = 2
 		}
@@ -123,21 +124,33 @@ type contribRow struct {
 // early in the window still finds the vest or purchase it came from.
 func classifyContributions(rows []contribRow, from string) (sums map[string]*planAccount, unclear []planEquitySale) {
 	sums = map[string]*planAccount{}
-	kinds := map[string]map[string]bool{} // the $0-deposit kinds each account has ever had
+	// The dates of each account's $0 deposits by kind, over all history.
+	deps := map[string]map[string][]string{}
 	for _, r := range rows {
 		if internalName.MatchString(r.name) {
 			continue
 		}
-		if kinds[r.account] == nil {
-			kinds[r.account] = map[string]bool{}
-		}
+		k := ""
 		if esppName.MatchString(r.name) {
-			kinds[r.account]["espp"] = true
+			k = "espp"
 		} else if rsuName.MatchString(r.name) {
-			kinds[r.account]["rsu"] = true
+			k = "rsu"
+		}
+		if k != "" {
+			if deps[r.account] == nil {
+				deps[r.account] = map[string][]string{}
+			}
+			deps[r.account][k] = append(deps[r.account][k], r.date)
 		}
 	}
-	last := map[string]string{}
+	// In an account with both kinds a sale belongs to a deposit in the week up to it, if only one kind made one.
+	// ponytail: 7 days is a guess (selling at vest settles within days); widen it if sales of one grant regularly
+	// land later, or drop it once the feed says which lot a sale closed.
+	inWeek := func(dates []string, sale string) bool {
+		d, err := time.Parse(time.DateOnly, sale)
+		lo := d.AddDate(0, 0, -7).Format(time.DateOnly)
+		return err == nil && slices.ContainsFunc(dates, func(x string) bool { return x >= lo && x <= sale })
+	}
 	for _, r := range rows {
 		kind := "deposit"
 		switch {
@@ -148,19 +161,20 @@ func classifyContributions(rows []contribRow, from string) (sums map[string]*pla
 		case rsuName.MatchString(r.name):
 			kind = "rsu"
 		case saleName.MatchString(r.name):
-			k := kinds[r.account]
-			switch kind = last[r.account]; {
-			case kind != "":
-			case k["rsu"] && !k["espp"]:
+			k := deps[r.account]
+			e, v := inWeek(k["espp"], r.date), inWeek(k["rsu"], r.date)
+			switch {
+			case len(k["rsu"]) > 0 && len(k["espp"]) == 0:
 				kind = "rsu"
-			case k["espp"] && !k["rsu"]:
+			case len(k["espp"]) > 0 && len(k["rsu"]) == 0:
 				kind = "espp"
+			case e && !v:
+				kind = "espp"
+			case v && !e:
+				kind = "rsu"
 			default:
 				kind = "unclear"
 			}
-		}
-		if (kind == "espp" || kind == "rsu") && !saleName.MatchString(r.name) {
-			last[r.account] = kind
 		}
 		if r.date < from {
 			continue
@@ -200,15 +214,16 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 	}
 	from, to := cur.AddDate(0, -max(b.Months, 0), 0).Format(time.DateOnly), cur.Format(time.DateOnly)
 	yearly := func(sum int64) int64 { return sum * 12 / int64(max(b.Months, 1)) }
-	interest := map[string]int64{}
+	var in int64
+	bySource := map[string]*planSource{}
+	// Interest paid into each account by source: it's left out of income when the account's growth carries it.
+	interest := map[string]map[string]*planSource{}
 	if b.Months > 0 {
-		// Interest paid into a cash account is left out of income: the account's growth carries it.
 		rows, err := a.db.QueryContext(ctx, `SELECT account_id,amount,COALESCE(NULLIF(merchant,''),name) FROM cashflow WHERE date>=$1 AND date<$2`, from, to)
 		if err != nil {
 			return b, err
 		}
-		var in, out int64
-		bySource := map[string]*planSource{}
+		var out int64
 		for rows.Next() {
 			var acct, name string
 			var amount int64
@@ -220,29 +235,39 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 			case amount < 0:
 				out -= amount
 			case interestName.MatchString(name):
-				interest[acct] += amount
-				b.Interest += amount
+				if interest[acct] == nil {
+					interest[acct] = map[string]*planSource{}
+				}
+				addSource(interest[acct], name, amount)
 			default:
 				in += amount
-				if bySource[name] == nil {
-					bySource[name] = &planSource{Name: name}
-				}
-				bySource[name].Amount += amount
-				bySource[name].Count++
+				addSource(bySource, name, amount)
 			}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return b, err
 		}
-		b.Income, b.Spending, b.Interest = in/int64(b.Months), out/int64(b.Months), b.Interest/int64(b.Months)
-		for _, s := range bySource {
-			b.IncomeSources = append(b.IncomeSources, planSource{s.Name, yearly(s.Amount), s.Count})
+		b.Spending = out / int64(b.Months)
+	}
+	// Average balance over the same months, so a drawn-down account's interest isn't read against what is left.
+	avgBal := map[string]int64{}
+	brows, err := a.db.QueryContext(ctx, `SELECT account_id,AVG(current)::float8 FROM balances WHERE date>=$1 AND date<$2 GROUP BY account_id`, from, to)
+	if err != nil {
+		return b, err
+	}
+	for brows.Next() {
+		var id string
+		var avg float64
+		if err := brows.Scan(&id, &avg); err != nil {
+			brows.Close()
+			return b, err
 		}
-		slices.SortFunc(b.IncomeSources, func(x, y planSource) int {
-			return cmp.Or(cmp.Compare(y.Amount, x.Amount), strings.Compare(x.Name, y.Name))
-		})
-		b.IncomeSources = b.IncomeSources[:min(len(b.IncomeSources), 8)]
+		avgBal[id] = int64(avg)
+	}
+	brows.Close()
+	if err := brows.Err(); err != nil {
+		return b, err
 	}
 	// Contributions that came from outside the owner's accounts (payroll, ESPP); a matched transfer from checking
 	// is already counted as cash-flow surplus. All history is read so a sale can find its vest or purchase.
@@ -283,16 +308,56 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 			ac.Deposits, ac.ESPP, ac.RSU = max(yearly(s.Deposits), 0), max(yearly(s.ESPP), 0), max(yearly(s.RSU), 0)
 			ac.Unclear, ac.Internal = max(yearly(s.Unclear), 0), yearly(s.Internal)
 		}
-		ac.Interest = yearly(interest[ac.ID])
-		guessPlanAccount(&ac)
+		avg, ok := avgBal[ac.ID]
+		if !ok {
+			avg = ac.Balance
+		}
+		var paid int64
+		for _, s := range interest[ac.ID] {
+			paid += s.Amount
+		}
+		// ponytail: 6% a year is the ceiling on plausible cash interest; adjust if rates go higher. Above it, or
+		// outside a deposit account, the money is a dividend or refund from somewhere else: it stays income.
+		if ac.Type == "depository" && avg > 0 && float64(yearly(paid))/float64(avg) <= 0.06 {
+			ac.Interest = yearly(paid)
+			b.Interest += paid
+		} else {
+			for name, s := range interest[ac.ID] {
+				in += s.Amount
+				if bySource[name] == nil {
+					bySource[name] = &planSource{Name: name}
+				}
+				bySource[name].Amount += s.Amount
+				bySource[name].Count += s.Count
+			}
+		}
+		guessPlanAccount(&ac, avg)
 		ac.Contribution = ac.Deposits + ac.ESPP
 		b.Accounts = append(b.Accounts, ac)
 	}
 	if err := rows.Err(); err != nil {
 		return b, err
 	}
+	if b.Months > 0 {
+		b.Income, b.Interest = in/int64(b.Months), b.Interest/int64(b.Months)
+	}
+	for _, s := range bySource {
+		b.IncomeSources = append(b.IncomeSources, planSource{s.Name, yearly(s.Amount), s.Count})
+	}
+	slices.SortFunc(b.IncomeSources, func(x, y planSource) int {
+		return cmp.Or(cmp.Compare(y.Amount, x.Amount), strings.Compare(x.Name, y.Name))
+	})
+	b.IncomeSources = b.IncomeSources[:min(len(b.IncomeSources), 8)]
 	b.Unvested, err = a.unvestedTotal(ctx)
 	return b, err
+}
+
+func addSource(m map[string]*planSource, name string, amount int64) {
+	if m[name] == nil {
+		m[name] = &planSource{Name: name}
+	}
+	m[name].Amount += amount
+	m[name].Count++
 }
 
 func (a *app) unvestedTotal(ctx context.Context) (int64, error) {
