@@ -405,8 +405,45 @@ func TestResolvePlan(t *testing.T) {
 	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 6 || v.Source != "owner" {
 		t.Errorf("vest years set by the owner: %+v", v)
 	}
+	// Social Security follows years worked (from 22) until the owner sets it.
+	for _, c := range []struct{ retire, years int }{{65, 35}, {13 + 22, 13}} {
+		doc.RetireAge = &c.retire
+		if s := resolvePlan(doc, base, jan1).SS; s.Source != "estimate" || s.YearsWorked != c.years || s.Monthly != ssEstimate(planDefault.SSMonthly, c.years) {
+			t.Errorf("retire at %d: %+v", c.retire, s)
+		}
+	}
+	ssm := int64(150000)
+	doc.SSMonthly = &ssm
+	if in := resolvePlan(doc, base, jan1); in.SSMonthly != 150000 || in.SS.Source != "owner" || in.SS.Estimate != ssEstimate(planDefault.SSMonthly, 13) {
+		t.Errorf("owner's Social Security: %+v", in.SS)
+	}
 	if e := resolvePlan(doc, base, time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)).Elapsed; e != 274.0/365 {
 		t.Errorf("October 2 elapsed = %v", e)
+	}
+}
+
+func TestSSEstimate(t *testing.T) {
+	full := planDefault.SSMonthly
+	if got := ssEstimate(full, 35); got != full {
+		t.Errorf("35 years = %d", got)
+	}
+	if got := ssEstimate(full, 50); got != full {
+		t.Errorf("past 35 years is capped: %d", got)
+	}
+	if got := ssEstimate(full, 0); got != 0 {
+		t.Errorf("no years = %d", got)
+	}
+	// Between the straight scale-down ($743) and the full benefit, because the formula favors low earnings.
+	if got := ssEstimate(full, 13); got < 118000 || got > 122000 || got%100 != 0 {
+		t.Errorf("13 years = %d", got)
+	}
+	var prev int64
+	for y := 0; y <= 40; y++ {
+		if got := ssEstimate(full, y); got < prev {
+			t.Errorf("%d years = %d, below %d for one fewer", y, got, prev)
+		} else {
+			prev = got
+		}
 	}
 }
 

@@ -417,6 +417,7 @@ type planInputs struct {
 	Accounts                                       []projAccount
 	Events                                         []planEvent
 	Vests                                          planVestsIn
+	SS                                             planSS
 }
 
 type planYear struct {
@@ -588,6 +589,26 @@ type planVestsDoc struct {
 	Off         bool     `json:"off,omitempty"`
 }
 
+// ssEstimate scales the default (a full 35-year career) to the years worked, through the benefit formula:
+// invert it for the career's average monthly earnings, take that share, apply the formula again. The 2025 bend
+// points make a short career lose less than a straight scale-down. Cents, in whole dollars.
+func ssEstimate(full int64, years int) int64 {
+	const b1, b2 = 122600.0, 739100.0 // a month
+	pia := func(a float64) float64 {
+		return 0.9*math.Min(a, b1) + 0.32*math.Max(0, math.Min(a, b2)-b1) + 0.15*math.Max(0, a-b2)
+	}
+	p, a := float64(full), 0.0
+	switch {
+	case p <= 0.9*b1:
+		a = p / 0.9
+	case p <= pia(b2):
+		a = b1 + (p-0.9*b1)/0.32
+	default:
+		a = b2 + (p-pia(b2))/0.15
+	}
+	return int64(math.Round(pia(a*float64(min(max(years, 0), 35))/35)/100)) * 100
+}
+
 // Defaults, from Monarch's Forecasting, except Social Security at 67 (full retirement age for anyone born after
 // 1960). Extra savings grow at a savings account's 2%.
 var planDefault = struct {
@@ -614,8 +635,7 @@ func resolvePlan(d planDoc, b planBaseline, today time.Time) planInputs {
 	jan1 := time.Date(today.Year(), 1, 1, 0, 0, 0, 0, today.Location())
 	in := planInputs{
 		BirthYear: d.BirthYear, StartYear: today.Year(), Elapsed: float64(today.YearDay()-1) / float64(jan1.AddDate(1, 0, 0).Sub(jan1).Hours()/24),
-		RetireAge: or(d.RetireAge, planDefault.RetireAge), EndAge: or(d.EndAge, planDefault.EndAge), SSAge: or(d.SSAge, planDefault.SSAge),
-		SSMonthly: or(d.SSMonthly, planDefault.SSMonthly), RetireSpendPct: or(d.RetireSpendPct, planDefault.RetireSpendPct),
+		RetireAge: or(d.RetireAge, planDefault.RetireAge), EndAge: or(d.EndAge, planDefault.EndAge), SSAge: or(d.SSAge, planDefault.SSAge), RetireSpendPct: or(d.RetireSpendPct, planDefault.RetireSpendPct),
 		RetireExtra: or(d.RetireExtra, planDefault.RetireExtra), Inflation: or(d.Inflation, planDefault.Inflation), ExtraGrowth: planDefault.ExtraGrowth,
 		Income: or(d.Income, b.Income), Spending: or(d.Spending, b.Spending),
 		SurplusAccount: d.SurplusAccount, Events: d.Events,
@@ -644,6 +664,13 @@ func resolvePlan(d planDoc, b planBaseline, today time.Time) planInputs {
 		}
 		in.Vests = v
 	}
+	in.SS = planSS{Source: "estimate", YearsWorked: min(max(in.RetireAge-22, 0), 35)} // 22: assumed start of full-time work
+	in.SS.Estimate = ssEstimate(planDefault.SSMonthly, in.SS.YearsWorked)
+	in.SS.Monthly = in.SS.Estimate
+	if d.SSMonthly != nil {
+		in.SS.Monthly, in.SS.Source = *d.SSMonthly, "owner"
+	}
+	in.SSMonthly = in.SS.Monthly
 	return in
 }
 
@@ -718,17 +745,26 @@ func (d planDoc) validate(year int) error {
 	return nil
 }
 
+// planSS is the monthly Social Security the plan uses and where it came from: the owner, or an estimate from years worked.
+type planSS struct {
+	Monthly     int64  `json:"monthly"`
+	Source      string `json:"source"` // owner or estimate
+	YearsWorked int    `json:"years_worked"`
+	Estimate    int64  `json:"estimate"` // what the estimate is at this retirement age, owner or not
+}
+
 type planProjection struct {
 	Years   []planYear  `json:"years"`
 	RunOut  int         `json:"run_out"` // age, 0 = lasts to the end of the plan
 	Vests   planVestsIn `json:"vests"`
+	SS      planSS      `json:"ss"`
 	Elapsed float64     `json:"elapsed"`
 }
 
 func runPlan(d planDoc, b planBaseline, today time.Time) planProjection {
 	in := resolvePlan(d, b, today)
 	years, runOut := project(in)
-	return planProjection{years, runOut, in.Vests, in.Elapsed}
+	return planProjection{years, runOut, in.Vests, in.SS, in.Elapsed}
 }
 
 func (a *app) planRoutes(mux *http.ServeMux) {

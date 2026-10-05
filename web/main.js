@@ -908,7 +908,8 @@ const planDirty = () => PL.vals && canon(PL.vals) !== canon(PL.data.doc)
 const KNOBS = [['retire_age', 'Retirement age', 'age'], ['income_monthly', 'Income a month', 'money'], ['spending_monthly', 'Spending a month', 'money'],
   ['retire_extra', 'Extra spending a year once retired', 'money'], ['retire_spend_pct', 'Retirement spending, % of today’s', 'pct'], ['ss_monthly', 'Social Security a month', 'money'],
   ['ss_age', 'Social Security from age', 'age'], ['inflation', 'Inflation', 'pct'], ['end_age', 'Plan until age', 'age']]
-const knobBase = k => ({ income_monthly: PL.data.baseline.income_monthly, spending_monthly: PL.data.baseline.spending_monthly })[k] ?? PL.data.defaults[k]
+// ss: the projection's estimate, which follows the retirement age.
+const knobBase = (k, ss) => ({ income_monthly: PL.data.baseline.income_monthly, spending_monthly: PL.data.baseline.spending_monthly, ss_monthly: ss?.estimate })[k] ?? PL.data.defaults[k]
 const fromData = k => k === 'income_monthly' || k === 'spending_monthly'
 const showVal = (kind, v) => kind === 'money' ? usd0(v) : kind === 'pct' ? `${v}%` : String(v)
 // Set a what-if value; back at its starting value, the override goes away.
@@ -931,7 +932,7 @@ function plan() {
     <p>The forecast is built from your own income, spending, balances and contributions. It only needs your birth year to know how many years are ahead.</p>
     <form class="frow" data-planform="setup"><label class="fl">Birth year<input id="birthyear" type="number" min="${new Date().getFullYear() - 110}" max="${new Date().getFullYear() - 18}" required inputmode="numeric"></label><button class="btn">Show my forecast</button></form>
     ${PL.err ? `<p class="warn" role="alert">${esc(PL.err)}</p>` : ''}
-    <p class="cap">The rest starts from your data, or from defaults where there is none: retirement at ${D.defaults.retire_age}, Social Security of ${usd0(D.defaults.ss_monthly)} a month from ${D.defaults.ss_age}, a plan to age ${D.defaults.end_age}. You can change any of it.</p></section>`
+    <p class="cap">The rest starts from your data, or from defaults where there is none: retirement at ${D.defaults.retire_age}, a Social Security estimate from your years of work (up to ${usd0(D.defaults.ss_monthly)} a month) from ${D.defaults.ss_age}, a plan to age ${D.defaults.end_age}. You can change any of it.</p></section>`
   const dirty = planDirty(), P = dirty && PL.proj ? PL.proj.projection : D.projection, Dp = dirty && PL.proj ? PL.proj.data_projection : D.data_projection
   const changed = canon(v) !== canon({ birth_year: v.birth_year, events: v.events, vests: { off: v.vests?.off || undefined } })
   const ra = v.retire_age ?? D.defaults.retire_age, end = v.end_age ?? D.defaults.end_age, age = new Date().getFullYear() - v.birth_year
@@ -940,15 +941,15 @@ function plan() {
   const accts = D.baseline.accounts, acc = id => v.accounts?.[id] || {}
   const included = accts.filter(a => acc(a.id).include ?? a.include), nowV = included.reduce((s, a) => s + Math.max(0, a.balance), 0)
   const knob = ([k, label, kind]) => {
-    const base = knobBase(k), cur = v[k] ?? base, ch = v[k] != null && v[k] !== base, saved = D.doc[k] != null && D.doc[k] === v[k]
-    const src = fromData(k) ? `Average of your last ${D.baseline.months} month${D.baseline.months === 1 ? '' : 's'}` : 'Default'
-    const note = ch ? `${saved ? 'Set by you.' : `Trying ${showVal(kind, cur)}.`} ${fromData(k) ? 'Your data' : 'Default'}: ${showVal(kind, base)}. <button class="linkbtn" data-act="knobreset" data-v="${k}">Use ${fromData(k) ? 'my data' : 'the default'}</button>` : src + '.'
+    const base = knobBase(k, P.ss), cur = v[k] ?? base, ch = v[k] != null && v[k] !== base, saved = D.doc[k] != null && D.doc[k] === v[k]
+    const src = fromData(k) ? `Average of your last ${D.baseline.months} month${D.baseline.months === 1 ? '' : 's'}` : k === 'ss_monthly' ? `Estimated from ${P.ss.years_worked} years of work, assuming you started at 22. Your real figure is at ssa.gov/myaccount` : 'Default'
+    const note = ch ? `${saved ? 'Set by you.' : `Trying ${showVal(kind, cur)}.`} ${fromData(k) ? 'Your data' : k === 'ss_monthly' ? 'Estimate' : 'Default'}: ${showVal(kind, base)}. <button class="linkbtn" data-act="knobreset" data-v="${k}">Use ${fromData(k) ? 'my data' : 'the default'}</button>` : src + '.'
     const input = privacy.on && kind === 'money' ? '<span class="muted">$•••</span>'
       : k === 'retire_age' ? `<input id="kn-${k}" type="range" min="${age}" max="${Math.max(80, age)}" step="1" value="${cur}" data-knob="${k}" data-kind="${kind}">`
       : `<input id="kn-${k}" type="number" step="${kind === 'money' ? 100 : kind === 'pct' ? 0.5 : 1}" value="${kind === 'money' ? Math.round(cur / 100) : cur}" data-knob="${k}" data-kind="${kind}" inputmode="decimal">`
     return `<div class="knob${k === 'retire_age' ? ' wide' : ''}${ch ? ' chg' : ''}"><label for="kn-${k}">${label}${k === 'retire_age' ? `: <b id="ra-v">${cur}</b>` : ''}</label>${input}<div class="src">${note}</div></div>`
   }
-  const evs = [...(v.events || []).map((e, i) => ({ ...e, i })), ...[[ra, `Retire at ${ra}`], [v.ss_age ?? D.defaults.ss_age, `Social Security, ${usd0(v.ss_monthly ?? D.defaults.ss_monthly)} a month`], [end, `End of plan at ${end}`]].map(([age, text]) => ({ year: v.birth_year + age, text, fixed: true }))]
+  const evs = [...(v.events || []).map((e, i) => ({ ...e, i })), ...[[ra, `Retire at ${ra}`], [v.ss_age ?? D.defaults.ss_age, `Social Security, ${usd0(P.ss.monthly)} a month`], [end, `End of plan at ${end}`]].map(([age, text]) => ({ year: v.birth_year + age, text, fixed: true }))]
     .sort((a, b) => a.year - b.year)
   const evText = e => e.fixed ? e.text : `${esc(e.name)}: ${e.kind === 'expense' ? `one-time expense of ${usd0(e.amount)}` : e.kind === 'income' ? `one-time income of ${usd0(e.amount)}`
     : `${e.kind === 'spending' ? 'spending' : 'income'} ${e.amount < 0 ? 'down' : 'up'} ${usd0(Math.abs(e.amount))} a year${e.until ? ` until ${e.until}` : ''}`}`
@@ -1037,7 +1038,7 @@ function sourcesHTML(P, accts) {
     ${left.length ? item('Left out', left.join('<br>')) : ''}
     ${unclear ? item('Stock sales we couldn’t place, left out', `${unclear}. None follows an RSU vest or ESPP purchase in the same account (in an account with both, within the week before). If they’re ESPP, add them to that account’s Added a year under Accounts; if RSUs, your unvested stock already covers them.`) : ''}
     ${yr && P.elapsed > 0 ? item(`${yr}: the rest of the year`, `Only the ${pct(1 - P.elapsed)} of ${yr} still ahead is projected; what’s past is already in your balances.`) : ''}
-    ${item('Assumed, not from your data', `Investment growth, inflation, Social Security, retirement spending, the after-tax share of vests and the flat tax rates. Change any of them in Your numbers and Accounts.`)}
+    ${item('Assumed, not from your data', `Investment growth, inflation, Social Security (an estimate from your years of work, assuming you started at 22: your real figure is at ssa.gov/myaccount), retirement spending, the after-tax share of vests and the flat tax rates. Change any of them in Your numbers and Accounts.`)}
   </details>`
 }
 // Included assets by age: the plan as a line and area, the data-only plan dashed, retirement shaded,
@@ -1650,7 +1651,7 @@ document.addEventListener('change', e => {
   if (t.dataset.surplus !== undefined) tryVal(PL.vals, 'surplus_account', t.value, '')
   else if (t.dataset.knob) {
     const k = t.dataset.knob, kind = t.dataset.kind, n = kind === 'money' ? Math.round(+t.value * 100) : +t.value
-    if (t.value !== '' && Number.isFinite(n)) tryVal(PL.vals, k, n, knobBase(k))
+    if (t.value !== '' && Number.isFinite(n)) tryVal(PL.vals, k, n, knobBase(k, (PL.proj?.projection || PL.data.projection)?.ss))
   } else if (t.dataset.acct) {
     const id = t.dataset.acct, f = t.dataset.f, base = PL.data.baseline.accounts.find(a => a.id === id)
     const n = f === 'include' ? t.checked : f === 'bucket' ? t.value : f === 'contribution' ? Math.round(+t.value * 100) : +t.value
