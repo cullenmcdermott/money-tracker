@@ -1,6 +1,8 @@
 # Runs on Depot CI (not GitHub Actions). Tests on every push and pull request; pushes to main and v* tags
 # also build the multi-arch image to ghcr.io and sign it with the repo's cosign key (verify with cosign.pub;
 # keyless signing does not work here, Fulcio rejects Depot's OIDC tokens).
+# Depot registers these triggers when this file changes on main; if pushes stop starting runs, change this file
+# on main to make it re-register them.
 name: CI
 
 on:
