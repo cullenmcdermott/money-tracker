@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 const (
 	sessionCookie = "mt_session"
 	loginCookie   = "mt_login"
+	mcpToken      = "mt_mcp" // read-only bearer token for `money-tracker mcp`; sealed apart so it never works as a cookie
 	sessionTTL    = 30 * 24 * time.Hour
 	loginTTL      = 10 * time.Minute
 )
@@ -189,10 +191,11 @@ func (a *authn) seal(name string, v any) string {
 
 func (a *authn) open(r *http.Request, name string, v any) bool {
 	c, err := r.Cookie(name)
-	if err != nil {
-		return false
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
+	return err == nil && a.unseal(name, c.Value, v)
+}
+
+func (a *authn) unseal(name, value string, v any) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil || len(raw) < a.gcm.NonceSize() {
 		return false
 	}
@@ -351,6 +354,24 @@ func (a *authn) handler(next http.Handler) http.Handler {
 		mux.HandleFunc("GET /auth/signed-out", func(w http.ResponseWriter, r *http.Request) {
 			page(w, http.StatusOK, "Signed out", "You have been signed out.", "/auth/login", "Sign in again")
 		})
+		// `money-tracker mcp` opens this in the browser: after the usual login, the read-only token goes back to the
+		// MCP server's listener on this machine's loopback, so only a local process can receive it.
+		mux.HandleFunc("GET /mcp/login", func(w http.ResponseWriter, r *http.Request) {
+			s, ok := a.session(r)
+			if !ok {
+				http.Redirect(w, r, "/auth/login?return="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+				return
+			}
+			port, err := strconv.Atoi(r.URL.Query().Get("port"))
+			if err != nil || port < 1 || port > 65535 {
+				page(w, http.StatusBadRequest, "Bad request", "The port is missing or invalid.", "", "")
+				return
+			}
+			// Expires with the session it came from, so the allow-list is still rechecked within 30 days.
+			tok := a.seal(mcpToken, session{Sub: s.Sub, Email: s.Email, Name: s.Name, Exp: s.Exp})
+			q := url.Values{"token": {tok}, "state": {r.URL.Query().Get("state")}}
+			http.Redirect(w, r, fmt.Sprintf("http://127.0.0.1:%d/callback?%s", port, q.Encode()), http.StatusFound)
+		})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// With auth off, only loopback Host names are served, so a DNS-rebinding page can't reach the dev server.
@@ -365,6 +386,13 @@ func (a *authn) handler(next http.Handler) http.Handler {
 		if _, ok := a.session(r); ok {
 			next.ServeHTTP(w, r)
 			return
+		}
+		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/") {
+			var s session
+			if a.unseal(mcpToken, tok, &s) && a.now().Unix() < s.Exp {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 		// The SPA shell and assets are protected too; an unauthenticated page load just bounces to login.
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(r.URL.Path, "/api/") {

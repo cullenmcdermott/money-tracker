@@ -87,6 +87,17 @@ The app signs in with OIDC. It was built for [Pocket ID](https://pocket-id.org),
 
 `OIDC_ALLOWED_EMAILS` also works. Groups are safer, because in some providers users can change their own email. Anyone not allowed gets a 403 page. Rotating `SESSION_SECRET` signs everyone out.
 
+## Reading it from an LLM (MCP)
+
+`money-tracker mcp <url>` is a local MCP server with one read-only tool, `get`, that reads the JSON API (`/api/accounts`, `/api/transactions?month=2026-09`, `/api/summary/categories`, and so on; the tool description lists them). For Claude Code:
+
+```sh
+claude mcp add money -- money-tracker mcp https://money.example.com
+# or: go run . mcp https://money.example.com   (from a checkout)
+```
+
+The first call opens `<url>/mcp/login` in your browser and signs in as usual. The app then sends a token back to the MCP server on `127.0.0.1`. The token works only for `GET /api/*` and expires with the browser session it came from. It is cached in your user config directory (`money-tracker/mcp-token.json`). Delete that file, or rotate `SESSION_SECRET`, to revoke it. Against `just dev` (sign-in off), no sign-in is needed.
+
 ## Alerts
 
 After each sync the app looks for charges worth a second look, using only your own history. Nothing is sent outside the app; open alerts show as one line on the Overview and in full under Transactions → Alerts.

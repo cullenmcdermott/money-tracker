@@ -471,6 +471,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "simplefin-claim" {
 		os.Exit(runSimplefinClaim(os.Stdin, os.Stdout, os.Stderr, simplefinClient{}))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		os.Exit(runMCP(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	// JSON logs; log.Printf calls go through it too. LOG_LEVEL=debug for more.
 	var level slog.Level
 	_ = level.UnmarshalText([]byte(env("LOG_LEVEL", "info")))
