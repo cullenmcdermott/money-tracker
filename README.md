@@ -152,6 +152,16 @@ Allocation splits holdings into US stock, international stock, bonds, cash and o
 
 SEC lookups are off unless `SEC_USER_AGENT` is set to your name and email, which the SEC requires of every client. Then, after each sync, the app downloads the SEC's public ticker lists (once a day) and the filings of held funds with no recent split. Only fund tickers and series ids are sent, at most 5 requests a second. Lookups tell the SEC which funds someone holds, which is why they are opt-in.
 
+## Invest a deposit
+
+**Invest a deposit** on the Investments page splits an amount you're adding to an account across its funds, moving them toward a target balance: the funds furthest below their target are filled first, and nothing is sold. Money market funds are left out as cash. The targets come from one of:
+
+- **Match my purchases** (the default): each fund's share of what you bought in that account over the last 3 to 36 months. A buy is a negative row named after the fund, matched to a holding by the words in its name; a reinvested dividend (the same name with a matching positive row that day) isn't a buy. With no buys in the window, the targets follow what each fund is worth.
+- **My percentages:** whole percentages per fund, typed into the Target column with **Edit targets**; the buys update as you type and Save keeps them.
+- **By asset class:** US stock, international stock and bonds. Each fund counts toward its largest class from [Holdings and allocation](#holdings-and-allocation), and funds in one class keep the mix you buy them in.
+
+Funds you hold but no longer buy can be ignored. Each buy amount has a Copy button for pasting into your brokerage.
+
 ## Backups
 
 Every night at `BACKUP_TIME`, and on demand from Settings, the server writes `BACKUP_DIR/money-YYYYMMDDTHHMMSSZ.tar.gz`. It contains a consistent CSV dump of every table and a manifest with the schema version. Only the newest `BACKUP_KEEP` are kept, and Settings warns if the last good backup is more than 36 hours old.

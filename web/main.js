@@ -778,6 +778,7 @@ function loadInvestments() {
 }
 function investments() {
   const head = `${banner()}<div class="pagehead"><h1>Investments</h1>
+    <a class="btn sm" href="#invest">Invest a deposit</a>
     <div class="seg" role="group" aria-label="Period">${[['3m', '3 months'], ['ytd', 'This year'], ['1y', '12 months'], ['all', 'All']].map(([k, l]) => `<button data-act="invp" data-v="${k}" aria-pressed="${INV.period === k}">${l}</button>`).join('')}</div></div>`
   if (INV.err) return `${head}<section class="panel"><div class="empty"><p><strong>Could not load investments</strong></p><p>${esc(INV.err)}</p><p><button class="btn ghost" data-act="invp" data-v="${INV.period}">Retry</button></p></div></section>`
   if (!INV.data || INV.data.period !== INV.period) { loadInvestments(); return `${head}<div class="load" role="status">Loading…</div>` }
@@ -886,6 +887,133 @@ function invChart(list) {
   months.forEach((m, k) => { if (k % every === 0 || k === n - 1) g += `<text x="${f1(x(k))}" y="${H - 6}" text-anchor="middle">${mShort(m.month)}</text>` })
   return `<svg class="invchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Investment balances over time">${g}</svg>`
 }
+
+/* ---------- Invest a deposit (#invest): split an amount across an account's funds toward its target balance ---------- */
+// IV.data: last GET /invest/{acct}?amount=. IV.form: the settings being edited (from data.doc until saved).
+// IV.edit: per-fund whole percentages being typed into the Target column (null when not editing); IV.preview is
+// the split for them (POST /invest/{acct}/preview), null while they don't total 100.
+const IV = { acct: null, amount: '', data: null, err: '', form: null, formErr: '', seq: 0, timer: 0, edit: null, preview: null, editErr: '' }
+const ivCents = () => Math.round((+IV.amount || 0) * 100)
+const ivSum = () => Object.values(IV.edit).reduce((s, x) => s + x, 0)
+function ivPreview() {
+  const seq = ++IV.seq
+  IV.preview = null
+  if (ivSum() !== 100) { ivPaint(); return }
+  send('POST', `/invest/${encodeURIComponent(IV.acct)}/preview?amount=${ivCents()}`, { ...IV.data.doc, mode: 'percent', percent: IV.edit })
+    .then(v => { if (seq === IV.seq && IV.edit) { IV.preview = v; IV.editErr = ''; ivPaint() } }, e => { if (seq === IV.seq) { IV.editErr = e.message; ivPaint() } })
+}
+// Repaints the results, keeping the caret in the target being typed.
+function ivPaint() {
+  const box = $('#ivres'); if (!box) return
+  const focus = document.activeElement?.dataset?.ivt
+  box.innerHTML = ivResults()
+  if (focus) box.querySelector(`[data-ivt="${CSS.escape(focus)}"]`)?.focus()
+}
+const ivAccounts = () => D.accounts.filter(a => a.type === 'investment')
+function ivLoad() {
+  const seq = ++IV.seq
+  api(`/invest/${encodeURIComponent(IV.acct)}?amount=${ivCents()}`).then(v => {
+    if (seq !== IV.seq) return
+    const fresh = IV.data?.account !== v.account
+    IV.data = v; IV.err = ''
+    if (fresh || !IV.form) IV.form = clone(v.doc)
+    if (state.view !== 'invest') return
+    if (fresh) render(); else ivPaint()
+  }, e => { if (seq === IV.seq) { IV.err = e.message; if (state.view === 'invest') render() } })
+}
+function invest() {
+  const accts = ivAccounts()
+  const head = `<div class="pagehead"><h1>Invest a deposit</h1></div><p class="sub"><a href="#investments">Investments</a> · Split money you're adding to an account across its funds, toward the balance you want between them. Nothing is ever sold.</p>`
+  if (!accts.length) return `${head}<section class="panel"><div class="empty"><p><strong>No investment accounts</strong></p></div></section>`
+  if (!accts.some(a => a.id === IV.acct)) { IV.acct = accts[0].id; IV.data = null; IV.form = null }
+  if (IV.err) return `${head}<section class="panel"><div class="empty"><p><strong>Could not load</strong></p><p>${esc(IV.err)}</p></div></section>`
+  if (IV.data?.account !== IV.acct) { ivLoad(); return `${head}<div class="load" role="status">Loading…</div>` }
+  return `${head}
+  <div class="invf"><label class="ivpick">Account <select id="ivacct">${accts.map(a => `<option value="${esc(a.id)}" ${a.id === IV.acct ? 'selected' : ''}>${esc(a.institution)} ${esc(a.name)}</option>`).join('')}</select></label>
+    <label class="ivpick">Amount <span class="ivamt">$<input id="ivamt" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${esc(IV.amount)}"></span></label></div>
+  <section class="panel" id="ivres">${ivResults()}</section>
+  ${ivSettings()}`
+}
+function ivResults() {
+  const ed = IV.edit, v = (ed && IV.preview) || IV.data, fs = v.funds, live = !ed || IV.preview // live: buys match the targets shown
+  if (!fs.length) return '<div class="empty"><p><strong>No funds to buy</strong></p><p>This account holds no funds other than cash, or its brokerage sends no holdings.</p></div>'
+  const held = fs.reduce((s, f) => s + f.value, 0), after = held + v.amount, sum = ed && ivSum()
+  const how = { purchases: `your purchases over the last ${v.doc.months} month${v.doc.months === 1 ? '' : 's'}`, percent: 'your percentages', classes: `your split of ${v.doc.classes.map((p, i) => `${p}% ${['US stock', 'international stock', 'bonds'][i]}`).join(', ')}` }[v.doc.mode]
+  const unm = Object.values(v.unmatched || {}), unmT = unm.reduce((s, x) => s + x, 0)
+  const tgt = f => ed ? `<span class="ivtin"><input type="number" min="0" max="100" step="1" inputmode="numeric" data-ivt="${esc(f.symbol)}" value="${ed[f.symbol] ?? 0}" aria-label="Target for ${esc(f.symbol)}">%</span>` : f.target ? pct(f.target) : '—'
+  const row = f => `<tr class="${f.target || f.buy || ed ? '' : 'muted'}"><td><b>${esc(f.symbol)}</b><br><small class="muted">${esc(clip(f.description, 44))}${f.ignored && v.doc.mode !== 'percent' ? ' · ignored' : ''}</small></td>
+    <td>${usd0(f.value)}</td><td>${held ? pct(f.value / held) : '—'}</td><td>${tgt(f)}</td><td>${v.amount && live ? pct((f.value + f.buy) / after) : '—'}</td>
+    <td><b>${f.buy && live ? usd2(f.buy) : '—'}</b></td>
+    <td class="ivact">${f.buy && !ed ? `<button class="linkbtn" data-act="ivcopy" data-v="${(f.buy / 100).toFixed(2)}" aria-label="Copy ${usd2(f.buy)}">Copy</button>` : ''}</td></tr>`
+  const foot = ed ? `<b class="${sum === 100 ? '' : 'warn2'}">${sum}%</b>` : ''
+  const bar = ed ? `<div class="frow" style="margin:0 0 10px"><button class="btn sm" data-act="ivtsave" ${sum === 100 ? '' : 'disabled'}>Save targets</button><button class="btn ghost sm" data-act="ivtcancel">Cancel</button>
+      <span class="${sum === 100 ? 'muted' : 'warn2'}" style="font-size:13px">${sum === 100 ? 'The buys show these targets. Saving sets this account to your percentages.' : `Targets total ${sum}%: ${sum < 100 ? `${100 - sum}% left to place` : `${sum - 100}% too much`}.`}</span>
+      ${IV.editErr ? `<span class="warn" role="alert">${esc(IV.editErr)}</span>` : ''}</div>`
+    : `<div class="frow" style="margin:0 0 10px"><button class="btn ghost sm" data-act="ivtedit">Edit targets</button></div>`
+  return `${bar}<div class="tblwrap"><table class="invtbl"><thead><tr><th>Fund</th><th>Value</th><th>Now</th><th>Target</th><th>After</th><th>Buy</th><th></th></tr></thead>
+    <tbody>${fs.map(row).join('')}</tbody><tfoot><tr><td>Total</td><td>${usd0(held)}</td><td></td><td>${foot}</td><td></td><td>${v.amount && live ? usd2(v.amount) : '—'}</td><td></td></tr></tfoot></table></div>
+    <p class="cap">${ed ? 'Set any fund to 0% to stop buying it.' : `Targets follow ${how}. The funds furthest below their target are filled first.${v.note ? ' ' + esc(v.note) : ''}${unm.length ? ` ${unm.length} purchase${unm.length === 1 ? '' : 's'} (${usd0(unmT)}) named no fund held here and ${unm.length === 1 ? 'is' : 'are'} left out.` : ''}`}</p>`
+}
+function ivSettings() {
+  const f = IV.form, fs = IV.data.funds, mode = f.mode
+  const radio = (k, l, d) => `<label class="ivmode"><input type="radio" name="mode" value="${k}" ${mode === k ? 'checked' : ''}><span><b>${l}</b><br><small class="muted">${d}</small></span></label>`
+  return `<section class="panel" style="margin-top:16px"><div class="phead"><h2>Targets</h2></div><form data-ivform>
+    <fieldset class="ivmodes"><legend class="sr">How to set the targets</legend>
+      ${radio('purchases', 'Match my purchases', 'Each fund gets its share of what you bought in this account recently.')}
+      ${radio('percent', 'My percentages', 'Set each fund yourself.')}
+      ${radio('classes', 'By asset class', 'Set US stock, international stock and bonds; each fund counts toward its largest class.')}</fieldset>
+    ${mode !== 'percent' ? `<label class="ivpick">Look back <select name="months">${[3, 6, 12, 24, 36].map(m => `<option value="${m}" ${f.months === m ? 'selected' : ''}>${m} months</option>`).join('')}</select></label>` : ''}
+    ${mode === 'percent' ? '<p class="cap">Set each fund\'s percentage with Edit targets above.</p>' : ''}
+    ${mode === 'classes' ? `<div class="clsin">${['US stock', 'International stock', 'Bonds'].map((l, i) => `<label>${l}<input type="number" min="0" max="100" step="1" name="c:${i}" value="${f.classes[i]}" inputmode="numeric"></label>`).join('')}</div><p class="cap">Whole percentages that total 100. A fund's class comes from the Holdings list on Investments.</p>` : ''}
+    ${mode !== 'percent' ? `<p class="ivign">Ignore: ${fs.map(x => `<label><input type="checkbox" name="i:${esc(x.symbol)}" ${f.ignore?.includes(x.symbol) ? 'checked' : ''}> ${esc(x.symbol)}</label>`).join('')}</p><p class="cap">For funds you hold but no longer buy.</p>` : ''}
+    ${IV.formErr ? `<p class="warn" role="alert">${esc(IV.formErr)}</p>` : ''}
+    <div class="frow"><button class="btn sm">Save</button>${canon(f) !== canon(IV.data.doc) ? '<button type="button" class="btn ghost sm" data-act="ivreset">Discard changes</button>' : ''}</div></form></section>`
+}
+// Copies the form's inputs into IV.form (radio and select changes re-render, so nothing typed is lost).
+function ivRead(form) {
+  const f = IV.form, el = form.elements
+  f.mode = el.mode.value; if (el.months) f.months = +el.months.value
+  const pick = p => [...form.querySelectorAll(`[name^="${p}"]`)], c = pick('c:'), ig = pick('i:')
+  if (c.length) f.classes = c.map(i => +i.value || 0)
+  if (ig.length) f.ignore = ig.filter(i => i.checked).map(i => i.name.slice(2))
+  // Switching to percentages starts from the targets shown now.
+  if (f.mode === 'percent' && !Object.keys(f.percent || {}).length) f.percent = Object.fromEntries(IV.data.funds.filter(x => x.target).map(x => [x.symbol, Math.round(x.target * 100)]))
+}
+document.addEventListener('input', e => {
+  if (e.target.id !== 'ivamt') return
+  IV.amount = e.target.value; clearTimeout(IV.timer); IV.timer = setTimeout(IV.edit ? ivPreview : ivLoad, 250)
+})
+document.addEventListener('input', e => {
+  const sym = e.target.dataset?.ivt; if (sym === undefined) return
+  IV.edit[sym] = Math.max(0, Math.round(+e.target.value || 0))
+  clearTimeout(IV.timer); IV.timer = setTimeout(ivPreview, 250)
+})
+document.addEventListener('change', e => {
+  const t = e.target
+  if (t.id === 'ivacct') { IV.acct = t.value; IV.form = IV.edit = IV.preview = null; IV.formErr = IV.editErr = ''; render() }
+  else if (t.form?.dataset.ivform !== undefined && (t.name === 'mode' || t.name === 'months' || t.name.startsWith('i:'))) { ivRead(t.form); if (t.name === 'mode') render() }
+})
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'), a = el?.dataset.act
+  if (a === 'ivcopy') navigator.clipboard?.writeText(el.dataset.v).then(() => toast(`Copied ${el.dataset.v}.`), () => toast('Could not copy.', { err: true }))
+  else if (a === 'ivtedit') {
+    // Start from the targets shown, rounded so they still total 100.
+    const fs = IV.data.funds, e = Object.fromEntries(fs.map(f => [f.symbol, Math.round(f.target * 100)]))
+    const big = fs.reduce((b, f) => f.target > (b?.target ?? -1) ? f : b, null)
+    if (big) e[big.symbol] += 100 - Object.values(e).reduce((s, x) => s + x, 0)
+    IV.edit = e; IV.editErr = ''; ivPreview(); ivPaint(); $('#ivres [data-ivt]')?.focus()
+  } else if (a === 'ivtcancel') { IV.edit = IV.preview = null; IV.editErr = ''; ivPaint() }
+  else if (a === 'ivtsave') {
+    const percent = Object.fromEntries(Object.entries(IV.edit).filter(([, x]) => x > 0))
+    send('PUT', '/invest/' + encodeURIComponent(IV.acct), { ...IV.data.doc, mode: 'percent', percent })
+      .then(() => { IV.edit = IV.preview = null; IV.data = IV.form = null; toast('Targets saved.'); render() }, er => { IV.editErr = er.message; ivPaint() })
+  } else if (a === 'ivreset') { IV.form = clone(IV.data.doc); IV.formErr = ''; render() }
+})
+document.addEventListener('submit', e => {
+  if (e.target.dataset.ivform === undefined) return
+  e.preventDefault(); ivRead(e.target)
+  send('PUT', '/invest/' + encodeURIComponent(IV.acct), IV.form).then(() => { IV.formErr = ''; IV.data = null; IV.form = null; toast('Targets saved.') }, er => { IV.formErr = er.message }).finally(render)
+})
 
 /* ---------- Plan (#plan): a forecast in today's dollars from the owner's own numbers, what-ifs, goals ---------- */
 // PL.data: GET /plan (doc = what's saved, baseline = what the data says, defaults, projection, data_projection).
@@ -1511,7 +1639,7 @@ document.addEventListener('keydown', e => {
 /* ---------- shell ---------- */
 const VIEWS = [['overview', 'Overview'], ['transactions', 'Transactions'], ['accounts', 'Accounts'], ['investments', 'Investments'], ['spending', 'Spending'], ['plan', 'Plan'], ['settings', 'Settings']]
 // Routes with no nav tab of their own; the tab of the view they belong to stays highlighted.
-const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'], report: ['spending', 'Income v Expense'], alerts: ['transactions', 'Alerts'] }
+const SUBVIEWS = { review: ['transactions', 'Review'], merchants: ['settings', 'Merchants'], recurring: ['spending', 'Recurring'], report: ['spending', 'Income v Expense'], alerts: ['transactions', 'Alerts'], invest: ['investments', 'Invest a deposit'] }
 const validView = v => VIEWS.some(x => x[0] === v) || v in SUBVIEWS
 function paintNav() {
   const link = ([v, l]) => `<a href="#${v}" ${(SUBVIEWS[state.view]?.[0] || state.view) === v ? 'aria-current="page"' : ''}>${icon(v, 20)}<span>${l}</span></a>`
@@ -1528,7 +1656,7 @@ function paintNav() {
 function render(top) {
   const v = state.view, main = $('#main'), fid = v === 'plan' && document.activeElement?.id
   if (!state.loaded) main.innerHTML = state.err ? `<div class="panel first"><h1>Could not load</h1><p>${esc(state.err)}</p><button class="btn" data-act="reload">Retry</button></div>` : '<div class="load" role="status">Loading…</div>'
-  else main.innerHTML = { overview, transactions, accounts, investments, spending, settings, review, merchants, recurring, alerts, plan, report }[v]()
+  else main.innerHTML = { overview, transactions, accounts, investments, invest, spending, settings, review, merchants, recurring, alerts, plan, report }[v]()
   paintNav()
   document.title = (VIEWS.find(x => x[0] === v)?.[1] || SUBVIEWS[v]?.[1] || 'Overview') + ' · Money Tracker'
   if (state.loaded && v === 'overview') { drawFlow(); drawNW(); drawCF(); const box = $('#flowbox'); if (box) flowEvents(box) }
