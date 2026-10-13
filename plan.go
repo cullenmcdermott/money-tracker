@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"regexp"
 	"slices"
@@ -35,7 +36,7 @@ type planAccount struct {
 	// the owner's accounts) and ESPP sales make up Contribution; RSU vest sales, unclear stock sales and moves
 	// between own accounts are left out of it; Interest, paid into a cash account, sets its Growth.
 	Deposits int64 `json:"deposits"`
-	ESPP     int64 `json:"espp"`
+	ESPP     int64 `json:"espp"` // with RSU, the stock pay
 	RSU      int64 `json:"rsu"`
 	Unclear  int64 `json:"unclear"`
 	Internal int64 `json:"internal"`
@@ -50,17 +51,22 @@ type planBaseline struct {
 	Interest int64 `json:"interest_monthly"`
 	Unvested int64 `json:"unvested"`
 	Paired   int64 `json:"paired"` // a year moved between cash and investment accounts without matching as a transfer
-	// The largest sources behind Income, a year each, so the owner can spot money that came from their own
-	// accounts (an untracked brokerage, say) and mark it as a transfer.
+	Stock    int64 `json:"stock_yearly"`
+	// The investment account most of the money moved from cash accounts went to: where the surplus goes.
+	SurplusAccount string `json:"surplus_account"`
+	// The largest sources behind Income, a year each, so the owner can leave out pay that has stopped or money
+	// that came from their own accounts.
 	IncomeSources []planSource     `json:"income_sources"`
 	UnclearSales  []planEquitySale `json:"unclear_sales"` // stock sales tied to neither an RSU vest nor an ESPP purchase
 	Accounts      []planAccount    `json:"accounts"`
 }
 
 type planSource struct {
-	Name   string `json:"name"`
-	Amount int64  `json:"amount"` // a year
-	Count  int    `json:"count"`
+	Name    string `json:"name"`
+	Amount  int64  `json:"amount"` // a year
+	Count   int    `json:"count"`
+	Last    string `json:"last"`    // date of the latest deposit
+	Stopped bool   `json:"stopped"` // none in the last 3 months: left out of income unless the owner counts it
 }
 
 type planEquitySale struct {
@@ -103,14 +109,14 @@ func guessPlanAccount(ac *planAccount, avg int64) {
 			ac.Growth = 2
 		}
 	case rothName.MatchString(ac.Name):
-		ac.Bucket, ac.Growth = "roth", 7
+		ac.Bucket, ac.Growth = "roth", planDefault.Growth
 	case pretaxName.MatchString(ac.Name):
-		ac.Bucket, ac.Growth = "pretax", 7
+		ac.Bucket, ac.Growth = "pretax", planDefault.Growth
 		if hsaName.MatchString(ac.Name) {
 			ac.PenaltyFreeAge = 65
 		}
 	default:
-		ac.Bucket, ac.Growth = "taxable", 7
+		ac.Bucket, ac.Growth = "taxable", planDefault.Growth
 	}
 }
 
@@ -302,15 +308,15 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 			return b, err
 		}
 		b.Paired = yearly(moved)
-		rows, err := a.db.QueryContext(ctx, `SELECT id,account_id,amount,COALESCE(NULLIF(merchant,''),name) FROM cashflow WHERE date>=$1 AND date<$2`, from, to)
+		rows, err := a.db.QueryContext(ctx, `SELECT id,account_id,amount,date::text,COALESCE(NULLIF(merchant,''),name),name FROM cashflow WHERE date>=$1 AND date<$2`, from, to)
 		if err != nil {
 			return b, err
 		}
 		var out int64
 		for rows.Next() {
-			var id, acct, name string
+			var id, acct, date, name, raw string
 			var amount int64
-			if err := rows.Scan(&id, &acct, &amount, &name); err != nil {
+			if err := rows.Scan(&id, &acct, &amount, &date, &name, &raw); err != nil {
 				rows.Close()
 				return b, err
 			}
@@ -318,14 +324,14 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 			case paired[id]:
 			case amount < 0:
 				out -= amount
-			case interestName.MatchString(name):
+			case interestName.MatchString(name) || interestName.MatchString(raw): // "Interest Paid" from a merchant named for the bank
 				if interest[acct] == nil {
 					interest[acct] = map[string]*planSource{}
 				}
-				addSource(interest[acct], name, amount)
+				addSource(interest[acct], name, amount, date)
 			default:
 				in += amount
-				addSource(bySource, name, amount)
+				addSource(bySource, name, amount, date)
 			}
 		}
 		rows.Close()
@@ -413,10 +419,13 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 				}
 				bySource[name].Amount += s.Amount
 				bySource[name].Count += s.Count
+				bySource[name].Last = max(bySource[name].Last, s.Last)
 			}
 		}
 		guessPlanAccount(&ac, avg)
-		ac.Contribution = ac.Deposits + ac.ESPP
+		// Stock sales are pay, sold as they vest and moved out: they count as stock pay, not as saving.
+		ac.Contribution = ac.Deposits
+		b.Stock += ac.RSU + ac.ESPP
 		b.Accounts = append(b.Accounts, ac)
 	}
 	if err := rows.Err(); err != nil {
@@ -425,23 +434,33 @@ func (a *app) planBaseline(ctx context.Context, today time.Time) (planBaseline, 
 	if b.Months > 0 {
 		b.Income, b.Interest = in/int64(b.Months), b.Interest/int64(b.Months)
 	}
+	// ponytail: "stopped" is no deposit in the 3 months before the window ends; a quarterly or yearly payer reads as
+	// stopped too, which the owner can undo by counting it.
+	recent := cur.AddDate(0, -3, 0).Format(time.DateOnly)
 	for _, s := range bySource {
-		b.IncomeSources = append(b.IncomeSources, planSource{s.Name, yearly(s.Amount), s.Count})
+		b.IncomeSources = append(b.IncomeSources, planSource{s.Name, yearly(s.Amount), s.Count, s.Last, s.Last < recent})
 	}
 	slices.SortFunc(b.IncomeSources, func(x, y planSource) int {
 		return cmp.Or(cmp.Compare(y.Amount, x.Amount), strings.Compare(x.Name, y.Name))
 	})
-	b.IncomeSources = b.IncomeSources[:min(len(b.IncomeSources), 8)]
+	b.IncomeSources = b.IncomeSources[:min(len(b.IncomeSources), 10)]
+	if err := a.db.QueryRowContext(ctx, `SELECT t.account_id FROM transactions t JOIN transactions o ON o.id=t.transfer_id
+		JOIN accounts a ON a.id=t.account_id JOIN accounts oa ON oa.id=o.account_id
+		WHERE a.type='investment' AND oa.type IN ('depository','credit') AND t.amount>0 AND t.date>=$1 AND t.date<$2
+		GROUP BY t.account_id ORDER BY SUM(t.amount) DESC,t.account_id LIMIT 1`, from, to).Scan(&b.SurplusAccount); err != nil && err != sql.ErrNoRows {
+		return b, err
+	}
 	b.Unvested, err = a.unvestedTotal(ctx)
 	return b, err
 }
 
-func addSource(m map[string]*planSource, name string, amount int64) {
+func addSource(m map[string]*planSource, name string, amount int64, date string) {
 	if m[name] == nil {
 		m[name] = &planSource{Name: name}
 	}
 	m[name].Amount += amount
 	m[name].Count++
+	m[name].Last = max(m[name].Last, date)
 }
 
 func (a *app) unvestedTotal(ctx context.Context) (int64, error) {
@@ -483,25 +502,29 @@ type projAccount struct {
 	PenaltyFreeAge float64
 }
 
-type planVestsIn struct {
-	Total       int64   `json:"total"` // unvested stock, paid out evenly over Years from the start year; what is left at retirement is forfeited
-	Years       int     `json:"years"`
+// planStockIn is stock pay: RSU and ESPP shares sold as they vest, after the shares withheld for tax, while working.
+type planStockIn struct {
+	Yearly      int64   `json:"yearly"`
+	Until       string  `json:"until"`   // retire (new grants keep coming), granted (only the unvested stock) or none
+	Granted     int64   `json:"granted"` // the unvested stock after tax: all "granted" pays out
 	AfterTaxPct float64 `json:"after_tax_pct"`
-	Source      string  `json:"source"` // owner, pace (from the RSU sales in the data) or default
 }
 
 // planInputs is every number the projection uses, already resolved from the data, defaults and the owner's
 // changes. Monthly amounts in cents; rates in %.
 type planInputs struct {
-	BirthYear, StartYear, RetireAge, EndAge, SSAge int
-	Elapsed                                        float64 // share of StartYear already past: in the balances, so not projected again
-	Income, Spending, SSMonthly, RetireExtra       int64
-	RetireSpendPct, Inflation, ExtraGrowth         float64
-	SurplusAccount                                 string // "" = Extra savings
-	Accounts                                       []projAccount
-	Events                                         []planEvent
-	Vests                                          planVestsIn
-	SS                                             planSS
+	BirthYear, StartYear, RetireAge, EndAge, SSAge, MortgageLastYear int
+	Elapsed                                                          float64 // share of StartYear already past: in the balances, so not projected again
+	Income, Spending, SSMonthly, RetireExtra, HealthBefore65         int64
+	MortgageMonthly                                                  int64
+	RetireSpendPct, Inflation, ExtraGrowth                           float64
+	SurplusAccount                                                   string // "" = Extra savings
+	Accounts                                                         []projAccount
+	Events                                                           []planEvent
+	Stock                                                            planStockIn
+	SS                                                               planSS
+	// Returns multiplies each year's growth factor of the investment accounts (a market path); nil = steady.
+	Returns []float64
 }
 
 type planYear struct {
@@ -550,11 +573,7 @@ func project(in planInputs) (years []planYear, runOut int) {
 			}
 		}
 	}
-	vestLeft, vestYear := 0.0, 0.0
-	if v := in.Vests; v.Years > 0 {
-		vestLeft = float64(v.Total) * v.AfterTaxPct / 100
-		vestYear = vestLeft / float64(v.Years)
-	}
+	stockLeft := float64(in.Stock.Granted)
 	for y := in.StartYear; y-in.BirthYear <= in.EndAge; y++ {
 		age := y - in.BirthYear
 		working := age < in.RetireAge
@@ -573,7 +592,16 @@ func project(in planInputs) (years []planYear, runOut int) {
 		}
 		py.Spending = share(in.Spending * 12)
 		if !working {
-			py.Spending = share(int64(math.Round(float64(in.Spending*12)*in.RetireSpendPct/100)) + in.RetireExtra)
+			// Health care on top of today's spending: insurance bought alone until Medicare at 65, then its costs.
+			health := in.RetireExtra
+			if age < 65 {
+				health = in.HealthBefore65
+			}
+			py.Spending = share(int64(math.Round(float64(in.Spending*12)*in.RetireSpendPct/100)) + health)
+		}
+		// Today's spending pays the mortgage; after the last payment it doesn't.
+		if in.MortgageLastYear > 0 && y > in.MortgageLastYear {
+			py.Spending = max(0, py.Spending-share(in.MortgageMonthly*12))
 		}
 		for _, e := range in.Events {
 			switch yearly := y >= e.Year && (e.Until == 0 || y <= e.Until); {
@@ -587,11 +615,15 @@ func project(in planInputs) (years []planYear, runOut int) {
 				py.Income += share(e.Amount)
 			}
 		}
-		// Vests while working; whatever hasn't vested at retirement is forfeited.
-		if working && vestLeft > 0 {
-			pay := math.Round(min(vestLeft, vestYear*part))
+		// Stock pay while working; with only the granted stock, it stops when that is paid out, and what hasn't
+		// vested at retirement is forfeited.
+		if working && in.Stock.Until != "none" {
+			pay := math.Round(float64(in.Stock.Yearly) * part)
+			if in.Stock.Until == "granted" {
+				pay = min(pay, stockLeft)
+				stockLeft -= pay
+			}
 			py.Income += int64(pay)
-			vestLeft -= pay
 		}
 		for _, p := range pots {
 			p.flow = 0
@@ -628,7 +660,11 @@ func project(in planInputs) (years []planYear, runOut int) {
 			py.Shortfall = int64(math.Round(need))
 		}
 		for _, p := range pots {
-			p.bal = max(0, p.bal+p.flow+math.Round(p.rate*part*(p.bal+p.flow/2)))
+			rate := p.rate
+			if in.Returns != nil && p.bucket != "extra" && p.bucket != "cash" {
+				rate = (1+rate)*in.Returns[y-in.StartYear] - 1
+			}
+			p.bal = max(0, p.bal+p.flow+math.Round(rate*part*(p.bal+p.flow/2)))
 			py.Assets += int64(p.bal)
 		}
 		if py.Shortfall > 0 && runOut == 0 {
@@ -639,22 +675,61 @@ func project(in planInputs) (years []planYear, runOut int) {
 	return years, runOut
 }
 
+// marketRuns replays the plan over 500 market paths: the share that lasts to the end, and the assets each year in
+// the path one in ten does worse than.
+// ponytail: one 12% yearly swing (a mostly-stock mix) moves every investment account together, lognormal around
+// its own growth so the middle path is the steady one; set it from the allocation if a bond-heavy owner needs it.
+func marketRuns(in planInputs) (chance float64, low []int64) {
+	const runs, swing = 500, 0.12
+	rng := rand.New(rand.NewPCG(1, 2)) // the same paths every time, so a what-if moves only by what changed
+	var assets [][]int64
+	lasted := 0
+	for range runs {
+		in.Returns = make([]float64, in.EndAge-(in.StartYear-in.BirthYear)+1)
+		for i := range in.Returns {
+			in.Returns[i] = math.Exp(swing * rng.NormFloat64())
+		}
+		years, runOut := project(in)
+		if runOut == 0 {
+			lasted++
+		}
+		if assets == nil {
+			assets = make([][]int64, len(years))
+		}
+		for i, y := range years {
+			assets[i] = append(assets[i], y.Assets)
+		}
+	}
+	for _, a := range assets {
+		slices.Sort(a)
+		low = append(low, a[len(a)/10])
+	}
+	return float64(lasted) / runs, low
+}
+
 // planDoc is what the owner has set. A nil field means "from the data, or the default".
 type planDoc struct {
-	BirthYear      int                       `json:"birth_year"`
-	RetireAge      *int                      `json:"retire_age,omitempty"`
-	EndAge         *int                      `json:"end_age,omitempty"`
-	SSAge          *int                      `json:"ss_age,omitempty"`
-	SSMonthly      *int64                    `json:"ss_monthly,omitempty"`
-	RetireSpendPct *float64                  `json:"retire_spend_pct,omitempty"`
-	RetireExtra    *int64                    `json:"retire_extra,omitempty"` // a year
-	Inflation      *float64                  `json:"inflation,omitempty"`
-	Income         *int64                    `json:"income_monthly,omitempty"`
-	Spending       *int64                    `json:"spending_monthly,omitempty"`
-	SurplusAccount string                    `json:"surplus_account,omitempty"`
-	Accounts       map[string]planAccountDoc `json:"accounts,omitempty"`
-	Events         []planEvent               `json:"events,omitempty"`
-	Vests          planVestsDoc              `json:"vests"`
+	BirthYear      int      `json:"birth_year"`
+	RetireAge      *int     `json:"retire_age,omitempty"`
+	EndAge         *int     `json:"end_age,omitempty"`
+	SSAge          *int     `json:"ss_age,omitempty"`
+	SSMonthly      *int64   `json:"ss_monthly,omitempty"` // ssa.gov's estimate at 67, which assumes work until then
+	RetireSpendPct *float64 `json:"retire_spend_pct,omitempty"`
+	RetireExtra    *int64   `json:"retire_extra,omitempty"`     // health costs a year from 65
+	HealthBefore65 *int64   `json:"health_before_65,omitempty"` // health insurance a year while retired before 65
+	Inflation      *float64 `json:"inflation,omitempty"`
+	Growth         *float64 `json:"growth,omitempty"` // investment accounts without their own
+	Income         *int64   `json:"income_monthly,omitempty"`
+	Spending       *int64   `json:"spending_monthly,omitempty"`
+	// Income sources the owner counts (true) or leaves out (false); unset follows whether the source stopped.
+	IncomeSources   map[string]bool           `json:"income_sources,omitempty"`
+	StockYearly     *int64                    `json:"stock_yearly,omitempty"`
+	StockUntil      string                    `json:"stock_until,omitempty"`      // "" = granted
+	MortgageMonthly *int64                    `json:"mortgage_monthly,omitempty"` // principal and interest
+	MortgageLast    *int                      `json:"mortgage_last_year,omitempty"`
+	SurplusAccount  string                    `json:"surplus_account,omitempty"` // "" = where the data's moves went, "extra" = Extra savings
+	Accounts        map[string]planAccountDoc `json:"accounts,omitempty"`
+	Events          []planEvent               `json:"events,omitempty"`
 }
 
 type planAccountDoc struct {
@@ -664,20 +739,12 @@ type planAccountDoc struct {
 	Contribution *int64   `json:"contribution,omitempty"`
 }
 
-// planVestsDoc: unvested stock paid out as income, by default the Investments page's unvested total over 4
-// years at 65% after tax; the total follows the data until the owner sets it.
-type planVestsDoc struct {
-	Total       *int64   `json:"total,omitempty"`
-	Years       *int     `json:"years,omitempty"`
-	AfterTaxPct *float64 `json:"after_tax_pct,omitempty"`
-	Off         bool     `json:"off,omitempty"`
-}
-
-// ssEstimate scales the default (a full 35-year career) to the years worked, through the benefit formula:
-// invert it for the career's average monthly earnings, take that share, apply the formula again. The 2025 bend
-// points make a short career lose less than a straight scale-down. Cents, in whole dollars.
+// ssEstimate scales a benefit at full retirement age that assumes a full 35-year career (ssa.gov's, which
+// assumes work until claiming) to the years worked, through the benefit formula: invert it for the career's
+// average monthly earnings, take that share, apply the formula again. The 2026 bend points make a short career
+// lose less than a straight scale-down. Cents, in whole dollars.
 func ssEstimate(full int64, years int) int64 {
-	const b1, b2 = 122600.0, 739100.0 // a month
+	const b1, b2 = 128600.0, 774900.0 // a month
 	pia := func(a float64) float64 {
 		return 0.9*math.Min(a, b1) + 0.32*math.Max(0, math.Min(a, b2)-b1) + 0.15*math.Max(0, a-b2)
 	}
@@ -693,8 +760,23 @@ func ssEstimate(full int64, years int) int64 {
 	return int64(math.Round(pia(a*float64(min(max(years, 0), 35))/35)/100)) * 100
 }
 
-// Defaults, from Monarch's Forecasting, except Social Security at 67 (full retirement age for anyone born after
-// 1960). Extra savings grow at a savings account's 2%.
+// ssFactor is the share of the benefit at full retirement age (67) paid when it starts at age: 5/9% less a month
+// for the 36 months before 67, 5/12% for each month before those, 2/3% more a month after 67, up to 70.
+func ssFactor(age int) float64 {
+	switch m := float64(age-67) * 12; {
+	case m >= 0:
+		return 1 + min(m, 36)*2/3/100
+	case m >= -36:
+		return 1 + m*5/9/100
+	default:
+		return 0.8 + (m+36)*5/12/100
+	}
+}
+
+// Defaults: Monarch's Forecasting, except Social Security at 67 (full retirement age for anyone born after
+// 1960), growth at the 6% current long-run forecasts give a stock-and-bond mix, a plan to 95 (a couple's
+// one-in-five chance), and health insurance before Medicare at what an unsubsidized couple pays. Extra savings
+// grow at a savings account's 2%.
 var planDefault = struct {
 	RetireAge      int     `json:"retire_age"`
 	EndAge         int     `json:"end_age"`
@@ -702,11 +784,12 @@ var planDefault = struct {
 	SSMonthly      int64   `json:"ss_monthly"`
 	RetireSpendPct float64 `json:"retire_spend_pct"`
 	RetireExtra    int64   `json:"retire_extra"`
+	HealthBefore65 int64   `json:"health_before_65"`
 	Inflation      float64 `json:"inflation"`
+	Growth         float64 `json:"growth"`
 	ExtraGrowth    float64 `json:"extra_growth"`
-	VestYears      int     `json:"vest_years"`
-	VestAfterTax   float64 `json:"vest_after_tax_pct"`
-}{65, 90, 67, 200000, 100, 650000, 3, 2, 4, 65}
+	StockAfterTax  float64 `json:"stock_after_tax_pct"`
+}{65, 95, 67, 200000, 100, 650000, 1500000, 3, 6, 2, 65}
 
 func or[T any](p *T, def T) T {
 	if p != nil {
@@ -715,52 +798,63 @@ func or[T any](p *T, def T) T {
 	return def
 }
 
+// incomeFromSources is the data's income a month with the sources the owner leaves out (or that stopped) taken out.
+func incomeFromSources(d planDoc, b planBaseline) int64 {
+	out := int64(0)
+	for _, s := range b.IncomeSources {
+		if counted, ok := d.IncomeSources[s.Name]; ok && !counted || !ok && s.Stopped {
+			out += s.Amount
+		}
+	}
+	return max(0, b.Income-out/12)
+}
+
 func resolvePlan(d planDoc, b planBaseline, today time.Time) planInputs {
 	jan1 := time.Date(today.Year(), 1, 1, 0, 0, 0, 0, today.Location())
 	in := planInputs{
 		BirthYear: d.BirthYear, StartYear: today.Year(), Elapsed: float64(today.YearDay()-1) / float64(jan1.AddDate(1, 0, 0).Sub(jan1).Hours()/24),
 		RetireAge: or(d.RetireAge, planDefault.RetireAge), EndAge: or(d.EndAge, planDefault.EndAge), SSAge: or(d.SSAge, planDefault.SSAge), RetireSpendPct: or(d.RetireSpendPct, planDefault.RetireSpendPct),
-		RetireExtra: or(d.RetireExtra, planDefault.RetireExtra), Inflation: or(d.Inflation, planDefault.Inflation), ExtraGrowth: planDefault.ExtraGrowth,
-		Income: or(d.Income, b.Income), Spending: or(d.Spending, b.Spending),
-		SurplusAccount: d.SurplusAccount, Events: d.Events,
+		RetireExtra: or(d.RetireExtra, planDefault.RetireExtra), HealthBefore65: or(d.HealthBefore65, planDefault.HealthBefore65),
+		Inflation: or(d.Inflation, planDefault.Inflation), ExtraGrowth: planDefault.ExtraGrowth,
+		Income: or(d.Income, incomeFromSources(d, b)), Spending: or(d.Spending, b.Spending),
+		MortgageMonthly: or(d.MortgageMonthly, 0), MortgageLastYear: or(d.MortgageLast, 0), Events: d.Events,
 	}
+	switch d.SurplusAccount {
+	case "":
+		in.SurplusAccount = b.SurplusAccount
+	case "extra":
+	default:
+		in.SurplusAccount = d.SurplusAccount
+	}
+	growth := or(d.Growth, planDefault.Growth)
 	for _, ac := range b.Accounts {
 		o := d.Accounts[ac.ID]
 		if !or(o.Include, ac.Include) {
 			continue
 		}
-		bucket := or(o.Bucket, ac.Bucket)
-		in.Accounts = append(in.Accounts, projAccount{ID: ac.ID, Bucket: bucket, Balance: max(ac.Balance, 0), Growth: or(o.Growth, ac.Growth),
+		bucket, g := or(o.Bucket, ac.Bucket), ac.Growth
+		if ac.Type == "investment" {
+			g = growth
+		}
+		in.Accounts = append(in.Accounts, projAccount{ID: ac.ID, Bucket: bucket, Balance: max(ac.Balance, 0), Growth: or(o.Growth, g),
 			Contribution: or(o.Contribution, ac.Contribution), PenaltyFreeAge: ac.PenaltyFreeAge})
 	}
-	if !d.Vests.Off {
-		v := planVestsIn{Total: or(d.Vests.Total, b.Unvested), Years: planDefault.VestYears, AfterTaxPct: or(d.Vests.AfterTaxPct, planDefault.VestAfterTax), Source: "default"}
-		// The pace of the RSU sales in the data says how fast the unvested stock vests. Those sales are left out of
-		// the accounts' contributions, so this is the one place vests count.
-		var pace int64
-		for _, ac := range b.Accounts {
-			pace += ac.RSU
-		}
-		if d.Vests.Years != nil {
-			v.Years, v.Source = *d.Vests.Years, "owner"
-		} else if pace > 0 && v.Total > 0 {
-			v.Years, v.Source = min(20, max(1, int(math.Ceil(float64(v.Total)*v.AfterTaxPct/100/float64(pace))))), "pace"
-		}
-		in.Vests = v
-	}
-	in.SS = planSS{Source: "estimate", YearsWorked: min(max(in.RetireAge-22, 0), 35)} // 22: assumed start of full-time work
-	in.SS.Estimate = ssEstimate(planDefault.SSMonthly, in.SS.YearsWorked)
-	in.SS.Monthly = in.SS.Estimate
+	pct := planDefault.StockAfterTax
+	in.Stock = planStockIn{Yearly: or(d.StockYearly, b.Stock), Until: cmp.Or(d.StockUntil, "granted"), AfterTaxPct: pct, Granted: int64(math.Round(float64(b.Unvested) * pct / 100))}
+	ss := planSS{AtFRA: or(d.SSMonthly, planDefault.SSMonthly), YearsWorked: min(max(in.RetireAge-22, 0), 35), Factor: ssFactor(in.SSAge), Source: "default"} // 22: assumed start of full-time work
 	if d.SSMonthly != nil {
-		in.SS.Monthly, in.SS.Source = *d.SSMonthly, "owner"
+		ss.Source = "owner"
 	}
-	in.SSMonthly = in.SS.Monthly
+	ss.Worked = ssEstimate(ss.AtFRA, ss.YearsWorked)
+	ss.Monthly = int64(math.Round(float64(ss.Worked)*ss.Factor/100)) * 100
+	in.SS, in.SSMonthly = ss, ss.Monthly
 	return in
 }
 
-// dataOnly keeps the owner's birth year, events and stock vests, and drops every number they changed.
+// dataOnly keeps what the data can't know (birth year, events, the mortgage, the owner's Social Security figure
+// and whether new stock grants come) and drops every number the owner changed.
 func (d planDoc) dataOnly() planDoc {
-	return planDoc{BirthYear: d.BirthYear, Events: d.Events, Vests: planVestsDoc{Off: d.Vests.Off}}
+	return planDoc{BirthYear: d.BirthYear, Events: d.Events, SSMonthly: d.SSMonthly, StockUntil: d.StockUntil, MortgageMonthly: d.MortgageMonthly, MortgageLast: d.MortgageLast}
 }
 
 // validate names the first bad field.
@@ -769,15 +863,18 @@ func (d planDoc) validate(year int) error {
 	if d.BirthYear < year-110 || d.BirthYear > year-18 {
 		return bad("birth_year", fmt.Sprintf("must be between %d and %d", year-110, year-18))
 	}
-	for f, p := range map[string]*int{"retire_age": d.RetireAge, "end_age": d.EndAge, "ss_age": d.SSAge} {
+	for f, p := range map[string]*int{"retire_age": d.RetireAge, "end_age": d.EndAge} {
 		if p != nil && (*p < 18 || *p > 110) {
 			return bad(f, "must be an age from 18 to 110")
 		}
 	}
+	if d.SSAge != nil && (*d.SSAge < 62 || *d.SSAge > 70) {
+		return bad("ss_age", "must be from 62 to 70")
+	}
 	if d.EndAge != nil && *d.EndAge <= year-d.BirthYear {
 		return bad("end_age", "must be after your current age")
 	}
-	for f, p := range map[string]*float64{"inflation": d.Inflation} {
+	for f, p := range map[string]*float64{"inflation": d.Inflation, "growth": d.Growth} {
 		if p != nil && (*p < -10 || *p > 20) {
 			return bad(f, "must be from -10% to 20%")
 		}
@@ -785,16 +882,20 @@ func (d planDoc) validate(year int) error {
 	if p := d.RetireSpendPct; p != nil && (*p < 0 || *p > 300) {
 		return bad("retire_spend_pct", "must be from 0% to 300%")
 	}
-	for f, p := range map[string]*int64{"ss_monthly": d.SSMonthly, "retire_extra": d.RetireExtra, "income_monthly": d.Income, "spending_monthly": d.Spending, "vests.total": d.Vests.Total} {
+	for f, p := range map[string]*int64{"ss_monthly": d.SSMonthly, "retire_extra": d.RetireExtra, "health_before_65": d.HealthBefore65, "income_monthly": d.Income,
+		"spending_monthly": d.Spending, "stock_yearly": d.StockYearly, "mortgage_monthly": d.MortgageMonthly} {
 		if p != nil && *p < 0 {
 			return bad(f, "can't be negative")
 		}
 	}
-	if p := d.Vests.Years; p != nil && (*p < 1 || *p > 20) {
-		return bad("vests.years", "must be from 1 to 20")
+	if p := d.MortgageLast; p != nil && (*p < year-1 || *p > year+50) {
+		return bad("mortgage_last_year", fmt.Sprintf("must be from %d to %d", year-1, year+50))
 	}
-	if p := d.Vests.AfterTaxPct; p != nil && (*p < 0 || *p > 100) {
-		return bad("vests.after_tax_pct", "must be from 0% to 100%")
+	if !slices.Contains([]string{"", "granted", "retire", "none"}, d.StockUntil) {
+		return bad("stock_until", "must be granted, retire or none")
+	}
+	if len(d.IncomeSources) > 100 {
+		return bad("income_sources", "can have at most 100 entries")
 	}
 	for id, o := range d.Accounts {
 		f := "accounts." + id
@@ -829,18 +930,24 @@ func (d planDoc) validate(year int) error {
 	return nil
 }
 
-// planSS is the monthly Social Security the plan uses and where it came from: the owner, or an estimate from years worked.
+// planSS is the monthly Social Security the plan uses and how it got there: the figure at 67 (the owner's from
+// ssa.gov, or a default), lowered for fewer working years, then changed for the age it starts.
 type planSS struct {
-	Monthly     int64  `json:"monthly"`
-	Source      string `json:"source"` // owner or estimate
-	YearsWorked int    `json:"years_worked"`
-	Estimate    int64  `json:"estimate"` // what the estimate is at this retirement age, owner or not
+	Monthly     int64   `json:"monthly"`
+	AtFRA       int64   `json:"at_fra"`
+	Worked      int64   `json:"worked"` // at 67, for YearsWorked
+	YearsWorked int     `json:"years_worked"`
+	Factor      float64 `json:"factor"`
+	Source      string  `json:"source"` // owner or default
 }
 
 type planProjection struct {
 	Years   []planYear  `json:"years"`
 	RunOut  int         `json:"run_out"` // age, 0 = lasts to the end of the plan
-	Vests   planVestsIn `json:"vests"`
+	Chance  float64     `json:"chance"`  // share of market paths that last to the end
+	Low     []int64     `json:"low"`     // assets each year in a poor market (1 in 10 paths do worse)
+	Income  int64       `json:"income_from_data"`
+	Stock   planStockIn `json:"stock"`
 	SS      planSS      `json:"ss"`
 	Elapsed float64     `json:"elapsed"`
 }
@@ -848,7 +955,8 @@ type planProjection struct {
 func runPlan(d planDoc, b planBaseline, today time.Time) planProjection {
 	in := resolvePlan(d, b, today)
 	years, runOut := project(in)
-	return planProjection{years, runOut, in.Vests, in.SS, in.Elapsed}
+	chance, low := marketRuns(in)
+	return planProjection{years, runOut, chance, low, incomeFromSources(d, b), in.Stock, in.SS, in.Elapsed}
 }
 
 func (a *app) planRoutes(mux *http.ServeMux) {

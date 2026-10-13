@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func TestPlanBaseline(t *testing.T) {
 	if b.Months != 5 || b.Income != 500000 || b.Spending != 300000 || b.Interest != 3000 || b.Unvested != 400000 {
 		t.Errorf("baseline = %d months, income %d, spending %d, interest %d, unvested %d", b.Months, b.Income, b.Spending, b.Interest, b.Unvested)
 	}
-	if len(b.IncomeSources) != 1 || b.IncomeSources[0] != (planSource{"PAYROLL", 6000000, 5}) {
+	if len(b.IncomeSources) != 1 || b.IncomeSources[0] != (planSource{"PAYROLL", 6000000, 5, "2026-08-05", false}) {
 		t.Errorf("income sources = %+v", b.IncomeSources)
 	}
 	if len(b.UnclearSales) != 1 || b.UnclearSales[0].AccountID != "odd" || b.UnclearSales[0].Amount != 200000 {
@@ -82,6 +83,10 @@ func TestPlanBaseline(t *testing.T) {
 		"brk":   {0, 0, 0, 0, 900000 * 12 / 5},
 		"roth":  {0, 0, 0, 0, 700000 * 12 / 5},
 		"odd":   {0, 0, 0, 200000 * 12 / 5, 0},
+	}
+	// The RSU and ESPP sales are stock pay; the brokerage got the money moved from checking, so the surplus goes there.
+	if b.Stock != (600000+300000)*12/5 || b.SurplusAccount != "brk" {
+		t.Errorf("stock pay %d, surplus account %q", b.Stock, b.SurplusAccount)
 	}
 	for _, ac := range b.Accounts {
 		if got := [5]int64{ac.Deposits, ac.ESPP, ac.RSU, ac.Unclear, ac.Internal}; got != split[ac.ID] {
@@ -96,13 +101,13 @@ func TestPlanBaseline(t *testing.T) {
 	}{
 		"chk":   {true, "cash", 0, 0},
 		"sav":   {true, "cash", 1, 0},
-		"roth":  {true, "roth", 7, 0},
-		"k401":  {true, "pretax", 7, 230000 * 12 / 5}, // payroll counts, annualized from 5 months
-		"brk":   {true, "taxable", 7, 0},              // a transfer from checking is in the surplus; a journal is internal
-		"hsa":   {true, "pretax", 7, 0},
+		"roth":  {true, "roth", 6, 0},
+		"k401":  {true, "pretax", 6, 230000 * 12 / 5}, // payroll counts, annualized from 5 months
+		"brk":   {true, "taxable", 6, 0},              // a transfer from checking is in the surplus; a journal is internal
+		"hsa":   {true, "pretax", 6, 0},
 		"card":  {false, "cash", 0, 0},
-		"stock": {true, "taxable", 7, 300000 * 12 / 5}, // only the ESPP sale: future vests come from the unvested stock
-		"odd":   {true, "taxable", 7, 0},
+		"stock": {true, "taxable", 6, 0}, // its sales are stock pay
+		"odd":   {true, "taxable", 6, 0},
 	}
 	for _, ac := range b.Accounts {
 		w, ok := want[ac.ID]
@@ -155,13 +160,13 @@ func TestClassifySales(t *testing.T) {
 
 func TestPlanInterestGrowth(t *testing.T) {
 	a, today := planApp(t)
-	// Savings earned $2,000 over the five months on an average of $100,000, then was drawn to $38,000: 4.8% a
+	// Savings earned $2,000 over the five months (its merchant is the bank, its name says interest) on an average of $100,000, then was drawn to $38,000: 4.8% a
 	// year, not 12.6% of what is left. Checking's "dividend" and a savings account's $1,000 on $10,000 are above
 	// any cash rate: they stay income, and the savings account keeps its default 2%.
 	if _, err := a.db.Exec(`INSERT INTO accounts(id,item_id,name,guessed_type,current) VALUES('sav2','item','Old Savings','depository',1000000);
 		INSERT INTO transactions(id,account_id,date,amount,name) VALUES
-			('si','sav','2026-06-30',200000,'INTEREST PAYMENT'),('div','chk','2026-07-31',500000,'DIVIDEND'),
-			('si2','sav2','2026-06-30',100000,'INTEREST PAYMENT')`); err != nil {
+			('div','chk','2026-07-31',500000,'DIVIDEND'),('si2','sav2','2026-06-30',100000,'INTEREST PAYMENT');
+		INSERT INTO transactions(id,account_id,date,amount,name,merchant) VALUES('si','sav','2026-06-30',200000,'Interest Paid','Contoso Bank')`); err != nil {
 		t.Fatal(err)
 	}
 	for d, bal := range map[string]int{"2026-04-10": 12000000, "2026-06-10": 10000000, "2026-08-10": 8000000, "2026-03-31": 100} { // the last is before the window
@@ -189,7 +194,7 @@ func TestPlanInterestGrowth(t *testing.T) {
 	for _, s := range b.IncomeSources {
 		got[s.Name] = s
 	}
-	if got["DIVIDEND"].Amount != 500000*12/5 || got["INTEREST PAYMENT"] != (planSource{"INTEREST PAYMENT", 100000 * 12 / 5, 1}) {
+	if got["DIVIDEND"].Amount != 500000*12/5 || got["INTEREST PAYMENT"] != (planSource{"INTEREST PAYMENT", 100000 * 12 / 5, 1, "2026-06-30", false}) {
 		t.Errorf("income sources = %+v", b.IncomeSources)
 	}
 }
@@ -261,25 +266,22 @@ func TestProjectScenarios(t *testing.T) {
 			t.Errorf("%d spending = %d, want %d", y.Year, y.Spending, want)
 		}
 	}
-	// Stock vests: $40,000 over 4 years at 50% after tax is $5,000 of income a year.
+	// Stock pay of $5,000 a year from $12,000 granted: two full years, then the $2,000 left.
 	in = planCase(65)
-	in.EndAge, in.Vests = 52, planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 50}
+	in.EndAge, in.Stock = 52, planStockIn{Yearly: 500000, Until: "granted", Granted: 1200000}
 	years, _ = project(in)
 	for i, y := range years {
-		want := int64(0)
-		if i < 4 {
-			want = 500000
-		}
+		want := []int64{500000, 500000, 200000, 0, 0, 0, 0}[i]
 		if y.Income != want {
 			t.Errorf("%d income = %d, want %d", y.Year, y.Income, want)
 		}
 	}
 	// On October 1, three months of the year are left: a quarter of the year's pay, spending, contributions and
-	// vests; a one-time expense still counts in full. The next year is whole.
+	// stock pay; a one-time expense still counts in full. The next year is whole.
 	in = planCase(65, projAccount{ID: "k", Bucket: "pretax", Contribution: 1200000, PenaltyFreeAge: 59.5})
 	in.EndAge, in.Income, in.Spending, in.Elapsed = 47, 1000000, 400000, 0.75
 	in.Events = []planEvent{{Kind: "expense", Name: "Roof", Year: 2026, Amount: 100000}}
-	in.Vests = planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 50}
+	in.Stock = planStockIn{Yearly: 500000, Until: "retire"}
 	years, _ = project(in)
 	if y := years[0]; y.Income != 3000000+125000 || y.Spending != 1200000+100000 || y.Contributions != 300000 {
 		t.Errorf("rest of the first year = %+v", y)
@@ -287,15 +289,15 @@ func TestProjectScenarios(t *testing.T) {
 	if y := years[1]; y.Income != 12000000+500000 || y.Spending != 4800000 || y.Contributions != 1200000 {
 		t.Errorf("first full year = %+v", y)
 	}
-	// Retiring now, at 46, stops pay, contributions and vests at once: what hasn't vested is forfeited.
+	// Retiring now, at 46, stops pay, contributions and stock pay at once.
 	in = planCase(46, projAccount{ID: "k", Bucket: "pretax", Balance: 10000000, Contribution: 600000, PenaltyFreeAge: 59.5})
-	in.EndAge, in.Income, in.Vests = 47, 1000000, planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 50}
+	in.EndAge, in.Income, in.Stock = 47, 1000000, planStockIn{Yearly: 500000, Until: "retire"}
 	for _, y := range func() []planYear { y, _ := project(in); return y }() {
 		if y.Income != 0 || y.Contributions != 0 {
 			t.Errorf("%d retired: income %d, contributions %d", y.Year, y.Income, y.Contributions)
 		}
 	}
-	// Retiring at 48 keeps the first two years of vests.
+	// Retiring at 48 keeps the first two years of stock pay; "none" leaves it out.
 	in.RetireAge = 48
 	in.EndAge = 49
 	years, _ = project(in)
@@ -306,6 +308,21 @@ func TestProjectScenarios(t *testing.T) {
 		}
 		if y.Income != want {
 			t.Errorf("%d income = %d, want %d", y.Year, y.Income, want)
+		}
+	}
+	in.Stock.Until = "none"
+	if y, _ := project(in); y[0].Income != 12000000 {
+		t.Errorf("no stock pay: income %d", y[0].Income)
+	}
+	// Retired at 60: ,000 of spending plus $15,000 of insurance until 65, then $6,000 of health costs; the
+	// mortgage's $12,000 a year stops after its last payment in 2030.
+	in = planCase(60)
+	in.BirthYear, in.EndAge, in.Spending, in.HealthBefore65, in.RetireExtra = 1966, 66, 400000, 1500000, 600000
+	in.MortgageMonthly, in.MortgageLastYear = 100000, 2030
+	years, _ = project(in)
+	for i, want := range []int64{6300000, 6300000, 6300000, 6300000, 6300000, 5400000 - 1200000, 5400000 - 1200000} {
+		if years[i].Spending != want {
+			t.Errorf("%d (age %d) spending = %d, want %d", years[i].Year, years[i].Age, years[i].Spending, want)
 		}
 	}
 }
@@ -363,62 +380,97 @@ func TestPlanAPI(t *testing.T) {
 }
 
 func TestResolvePlan(t *testing.T) {
-	base := planBaseline{Income: 500000, Spending: 300000, Unvested: 4000000, Accounts: []planAccount{
-		{ID: "chk", Include: true, Bucket: "cash", Balance: 100},
-		{ID: "k", Include: true, Bucket: "pretax", Growth: 7, Contribution: 50, Balance: 200, PenaltyFreeAge: 59.5},
+	base := planBaseline{Income: 500000, Spending: 300000, Unvested: 4000000, Stock: 1000000, SurplusAccount: "k", Accounts: []planAccount{
+		{ID: "chk", Type: "depository", Include: true, Bucket: "cash", Growth: 1, Balance: 100},
+		{ID: "k", Type: "investment", Include: true, Bucket: "pretax", Growth: 6, Contribution: 50, Balance: 200, PenaltyFreeAge: 59.5},
+		{ID: "ira", Type: "investment", Include: true, Bucket: "roth", Growth: 6, Balance: 300, PenaltyFreeAge: 59.5},
 		{ID: "card", Include: false, Bucket: "cash", Balance: -300},
-	}}
+	}, IncomeSources: []planSource{{Name: "PAYROLL", Amount: 4800000}, {Name: "OLD JOB", Amount: 1200000, Stopped: true}}}
 	growth, off := 5.0, false
 	spend := int64(250000)
 	doc := planDoc{BirthYear: 1985, Spending: &spend, Accounts: map[string]planAccountDoc{"k": {Growth: &growth}, "chk": {Include: &off}, "gone": {Include: &off}}}
 	jan1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	in := resolvePlan(doc, base, jan1)
-	if in.RetireAge != 65 || in.EndAge != 90 || in.SSAge != 67 || in.SSMonthly != 200000 || in.RetireExtra != 650000 || in.Inflation != 3 || in.RetireSpendPct != 100 {
+	if in.RetireAge != 65 || in.EndAge != 95 || in.SSAge != 67 || in.SSMonthly != 200000 || in.RetireExtra != 650000 || in.HealthBefore65 != 1500000 || in.Inflation != 3 || in.RetireSpendPct != 100 {
 		t.Errorf("defaults = %+v", in)
 	}
-	if in.Income != 500000 || in.Spending != 250000 || len(in.Accounts) != 1 || in.Accounts[0].Growth != 5 || in.Accounts[0].Contribution != 50 {
+	// The stopped source is left out of income: $1,000 a month less. Investments without their own growth take
+	// the plan's; the surplus goes where the data's moves went.
+	if in.Income != 400000 || in.Spending != 250000 || len(in.Accounts) != 2 || in.Accounts[0].Growth != 5 || in.Accounts[0].Contribution != 50 || in.Accounts[1].Growth != 6 || in.SurplusAccount != "k" {
 		t.Errorf("resolved = %+v", in)
 	}
 	if in.Elapsed != 0 {
 		t.Errorf("on January 1 nothing of the year is past: %v", in.Elapsed)
 	}
-	if in.Vests != (planVestsIn{Total: 4000000, Years: 4, AfterTaxPct: 65, Source: "default"}) {
-		t.Errorf("vests follow the unvested total by default: %+v", in.Vests)
+	// Counting the stopped source and leaving out the other; a growth for every investment; Extra savings.
+	g7 := 7.0
+	doc.IncomeSources, doc.Growth, doc.SurplusAccount = map[string]bool{"OLD JOB": true, "PAYROLL": false}, &g7, "extra"
+	if in := resolvePlan(doc, base, jan1); in.Income != 500000-400000 || in.Accounts[1].Growth != 7 || in.Accounts[0].Growth != 5 || in.SurplusAccount != "" {
+		t.Errorf("owner's sources and growth = %+v", in)
 	}
-	total := int64(1000000)
-	doc.Vests = planVestsDoc{Total: &total}
-	if v := resolvePlan(doc, base, jan1).Vests; v.Total != 1000000 {
-		t.Errorf("vests total set by the owner: %+v", v)
+	// Stock pay from the data, only the granted stock at 65% after tax by default.
+	if in.Stock != (planStockIn{Yearly: 1000000, Until: "granted", Granted: 2600000, AfterTaxPct: 65}) {
+		t.Errorf("stock pay = %+v", in.Stock)
 	}
-	doc.Vests = planVestsDoc{Off: true}
-	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 0 {
-		t.Errorf("vests off: %+v", v)
+	yearly := int64(300000)
+	doc.StockYearly, doc.StockUntil = &yearly, "retire"
+	if s := resolvePlan(doc, base, jan1).Stock; s != (planStockIn{Yearly: 300000, Until: "retire", Granted: 2600000, AfterTaxPct: 65}) {
+		t.Errorf("owner's stock pay = %+v", s)
 	}
-	// $10,000 a year of RSU sales in the data: $40,000 unvested at 65% after tax ($26,000) takes 3 years.
-	base.Accounts = append(base.Accounts, planAccount{ID: "stock", Include: true, Bucket: "taxable", RSU: 1000000})
-	doc.Vests = planVestsDoc{}
-	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 3 || v.Source != "pace" {
-		t.Errorf("vests at the data's pace: %+v", v)
-	}
-	years := 6
-	doc.Vests = planVestsDoc{Years: &years}
-	if v := resolvePlan(doc, base, jan1).Vests; v.Years != 6 || v.Source != "owner" {
-		t.Errorf("vest years set by the owner: %+v", v)
-	}
-	// Social Security follows years worked (from 22) until the owner sets it.
+	// Social Security: the figure at 67 lowered for years worked (from 22), then for the age it starts.
 	for _, c := range []struct{ retire, years int }{{65, 35}, {13 + 22, 13}} {
 		doc.RetireAge = &c.retire
-		if s := resolvePlan(doc, base, jan1).SS; s.Source != "estimate" || s.YearsWorked != c.years || s.Monthly != ssEstimate(planDefault.SSMonthly, c.years) {
+		if s := resolvePlan(doc, base, jan1).SS; s.Source != "default" || s.YearsWorked != c.years || s.Worked != ssEstimate(planDefault.SSMonthly, c.years) || s.Monthly != s.Worked {
 			t.Errorf("retire at %d: %+v", c.retire, s)
 		}
 	}
-	ssm := int64(150000)
-	doc.SSMonthly = &ssm
-	if in := resolvePlan(doc, base, jan1); in.SSMonthly != 150000 || in.SS.Source != "owner" || in.SS.Estimate != ssEstimate(planDefault.SSMonthly, 13) {
-		t.Errorf("owner's Social Security: %+v", in.SS)
+	ssm, at62, at70 := int64(400000), 62, 70
+	doc.SSMonthly, doc.SSAge = &ssm, &at62
+	retire := 65
+	doc.RetireAge = &retire
+	if in := resolvePlan(doc, base, jan1); in.SSMonthly != 280000 || in.SS.Source != "owner" || in.SS.AtFRA != 400000 {
+		t.Errorf("owner's Social Security at 62: %+v", in.SS)
+	}
+	doc.SSAge = &at70
+	if in := resolvePlan(doc, base, jan1); in.SSMonthly != 496000 {
+		t.Errorf("owner's Social Security at 70: %+v", in.SS)
 	}
 	if e := resolvePlan(doc, base, time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)).Elapsed; e != 274.0/365 {
 		t.Errorf("October 2 elapsed = %v", e)
+	}
+}
+
+func TestSSFactor(t *testing.T) {
+	for age, want := range map[int]float64{62: 0.70, 63: 0.75, 64: 0.80, 65: 0.8667, 66: 0.9333, 67: 1, 68: 1.08, 69: 1.16, 70: 1.24} {
+		if got := ssFactor(age); math.Abs(got-want) > 0.0001 {
+			t.Errorf("at %d: %v, want %v", age, got, want)
+		}
+	}
+}
+
+// Market paths: a plan with far more than it needs always lasts, one with nothing never does, and one in between
+// lasts in some paths; the same plan gives the same answer every time.
+func TestMarketRuns(t *testing.T) {
+	in := planCase(46, projAccount{ID: "b", Bucket: "taxable", Balance: 500000000, Growth: 6})
+	in.EndAge, in.Spending, in.Inflation = 90, 200000, 3
+	if c, low := marketRuns(in); c != 1 || len(low) != 45 {
+		t.Errorf("rich: chance %v, %d years", c, len(low))
+	}
+	in.Accounts[0].Balance = 0
+	if c, _ := marketRuns(in); c != 0 {
+		t.Errorf("broke: chance %v", c)
+	}
+	in.Accounts[0].Balance, in.Spending = 60000000, 250000 // $30,000 a year from $600,000: 5%
+	c, low := marketRuns(in)
+	if c <= 0.1 || c >= 0.9 {
+		t.Errorf("borderline: chance %v", c)
+	}
+	steady, _ := project(in)
+	if low[10] >= steady[10].Assets {
+		t.Errorf("a poor market (%d) should be below the steady one (%d)", low[10], steady[10].Assets)
+	}
+	if c2, _ := marketRuns(in); c2 != c {
+		t.Errorf("not repeatable: %v then %v", c, c2)
 	}
 }
 

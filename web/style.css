@@ -476,6 +476,15 @@ a.btn{text-decoration:none}
 .pchart{width:100%;height:auto;display:block;margin-top:8px}
 .pchart text{font-size:12px;fill:var(--muted)}
 .legend i.dash{background:none;border-top:2px dashed var(--muted);height:0;width:16px;border-radius:0}
+.legend i.dash.low{border-top:2px dotted var(--spend)}
+.kgroup{font:600 15px var(--fd);margin:18px 8px 2px;color:var(--ink2)}
+.knob .src .help{color:var(--ink2)}
+.knob .sub2{font-size:13px;color:var(--ink2)}
+.psrcs{grid-column:1/-1;margin-top:6px}
+.psrc{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;font-size:13.5px;cursor:pointer}
+.psrc .n{font-weight:500}
+.knob .psrc input{width:auto}
+.psrc.off .n{text-decoration:line-through;color:var(--muted)}
 .note{font-size:13px;color:var(--ink2);background:var(--panel2);border-radius:8px;padding:10px 12px;margin-top:12px}
 .knobs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px}
 .knob{display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:2px 12px;align-items:center;padding:10px 8px;border-bottom:1px solid var(--line2);border-radius:6px}

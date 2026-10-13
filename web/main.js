@@ -1023,8 +1023,10 @@ const blankEv = () => ({ kind: 'expense', name: '', year: '', amount: '', until:
 const clone = o => JSON.parse(JSON.stringify(o))
 const isObj = v => v && typeof v === 'object' && !Array.isArray(v)
 // Key order, unset keys and empty objects don't matter when comparing docs.
-const canon = o => JSON.stringify(o, (k, v) => isObj(v) ? Object.fromEntries(Object.entries(v).filter(([, x]) => x != null && !(isObj(x) && !Object.keys(x).length)).sort()) : v)
+const canon = o => JSON.stringify(o, (k, v) => isObj(v) ? Object.fromEntries(Object.entries(v).filter(([, x]) => x != null && x !== '' && !(isObj(x) && !Object.keys(x).length)).sort()) : v)
 const r10k = c => privacy.on ? '$•••' : c >= 99500000 ? '$' + (Math.round(c / 1e7) / 10).toFixed(1) + 'M' : '$' + Math.round(c / 1e6) * 10 + 'k'
+// What the data can't know stays when going back to the data alone (as planDoc.dataOnly).
+const dataOnly = v => clone({ birth_year: v.birth_year, events: v.events, ss_monthly: v.ss_monthly, stock_until: v.stock_until, mortgage_monthly: v.mortgage_monthly, mortgage_last_year: v.mortgage_last_year })
 function setPlan(p) { PL.data = p; PL.vals = p.doc ? clone(p.doc) : null; PL.proj = null; PL.ev = PL.ev || blankEv() }
 function loadPlan() {
   if (inflight.has('plan')) return
@@ -1032,13 +1034,28 @@ function loadPlan() {
   Promise.all([api('/plan'), api('/goals')]).then(([p, g]) => { setPlan(p); PL.goals = g }, e => { PL.err = e.message }).finally(() => { inflight.delete('plan'); if (state.view === 'plan') render() })
 }
 const planDirty = () => PL.vals && canon(PL.vals) !== canon(PL.data.doc)
-// The numbers anyone can change, with where their starting value comes from.
-const KNOBS = [['retire_age', 'Retirement age', 'age'], ['income_monthly', 'Income a month', 'money'], ['spending_monthly', 'Spending a month', 'money'],
-  ['retire_extra', 'Extra spending a year once retired', 'money'], ['retire_spend_pct', 'Retirement spending, % of today’s', 'pct'], ['ss_monthly', 'Social Security a month', 'money'],
-  ['ss_age', 'Social Security from age', 'age'], ['inflation', 'Inflation', 'pct'], ['end_age', 'Plan until age', 'age']]
-// ss: the projection's estimate, which follows the retirement age.
-const knobBase = (k, ss) => ({ income_monthly: PL.data.baseline.income_monthly, spending_monthly: PL.data.baseline.spending_monthly, ss_monthly: ss?.estimate })[k] ?? PL.data.defaults[k]
-const fromData = k => k === 'income_monthly' || k === 'spending_monthly'
+// The numbers anyone can change, in three groups, each with what it means. help(P, v) is shown under it.
+const KNOBS = [
+  ['While you work', [
+    ['retire_age', 'Retire at', 'age', () => 'Your pay, stock pay and 401(k) contributions stop then. From then on, spending comes out of your accounts.'],
+    ['income_monthly', 'Take-home pay a month', 'money', () => 'Pay that lands in your checking, savings and cards, after taxes and 401(k).'],
+    ['stock_yearly', 'Stock pay a year, after tax', 'money', () => 'RSU and ESPP shares sold as they vest, after the shares held back for tax. Like the rest of your pay, what you don’t spend is saved.'],
+    ['spending_monthly', 'Spending a month', 'money', () => 'Everything that left your checking and cards, except moves between your own accounts. It includes your mortgage.']]],
+  ['Once you retire', [
+    ['retire_spend_pct', 'Spending, % of today’s', 'pct', () => 'Today’s spending carried into retirement: 100% keeps the same lifestyle. The mortgage drops out by itself after its last payment.'],
+    ['health_before_65', 'Health insurance a year, until 65', 'money', (P, v) => `Before Medicare you buy your own. An unsubsidized marketplace plan runs about $8,000–12,000 a year per adult. ${(v.retire_age ?? PL.data.defaults.retire_age) >= 65 ? 'You retire at 65 or later, so it doesn’t apply.' : 'Only for the years you’re retired before 65.'}`],
+    ['retire_extra', 'Health costs a year, from 65', 'money', () => 'Medicare premiums and out-of-pocket costs on top of today’s spending. Fidelity estimates about $8,000 a year per person.'],
+    ['mortgage_monthly', 'Mortgage payment a month', 'money', () => 'Principal and interest only: property tax and insurance (escrow) go on after it’s paid off.'],
+    ['mortgage_last_year', 'Last mortgage payment, year', 'year', () => 'Your spending stops including the payment after this year. Empty: no mortgage.'],
+    ['ss_monthly', 'Social Security at 67', 'money', P => `Your benefit at 67 from ssa.gov/myaccount. ${P.ss.years_worked >= 35 ? 'You work 35 years or more, so the plan uses it as it is.' : `ssa.gov assumes you keep earning until then; retiring at ${(PL.vals.retire_age ?? PL.data.defaults.retire_age)} is ${P.ss.years_worked} years of work (from 22) instead of 35, so the plan uses ${usd0(P.ss.worked)} at 67.`}`],
+    ['ss_age', 'Social Security starts at', 'age', P => `From 62 to 70: before 67 it pays less for life, after 67 more. At ${PL.vals.ss_age ?? PL.data.defaults.ss_age} that’s ${Math.round(P.ss.factor * 100)}% of the figure at 67: ${usd0(P.ss.monthly)} a month.`]]],
+  ['Assumptions', [
+    ['growth', 'Investment growth a year', 'pct', () => 'Before inflation. Long-run forecasts for a stock-and-bond mix are 5–7%. An account can have its own under Accounts.'],
+    ['inflation', 'Inflation a year', 'pct', () => 'Everything is in today’s dollars, so only the gap between growth and inflation matters.'],
+    ['end_age', 'Plan until age', 'age', () => 'How long the money needs to last. A couple has about a 1 in 5 chance that one of them reaches 95.']]]]
+// A knob's starting value: the data's where there is one (income after the sources left out), else the default.
+const knobBase = (k, P) => ({ income_monthly: P.income_from_data, spending_monthly: PL.data.baseline.spending_monthly, stock_yearly: PL.data.baseline.stock_yearly, mortgage_monthly: 0, mortgage_last_year: '' })[k] ?? PL.data.defaults[k]
+const fromData = k => ['income_monthly', 'spending_monthly', 'stock_yearly'].includes(k)
 const showVal = (kind, v) => kind === 'money' ? usd0(v) : kind === 'pct' ? `${v}%` : String(v)
 // Set a what-if value; back at its starting value, the override goes away.
 function tryVal(obj, k, v, base) { if (v === base || v === '' || v == null) delete obj[k]; else obj[k] = v; planChanged() }
@@ -1049,6 +1066,7 @@ function planChanged() {
   const seq = ++PL.seq, body = clone(PL.vals)
   PL.timer = setTimeout(() => send('POST', '/plan/projection', body).then(r => { if (seq === PL.seq) { PL.proj = r; PL.err = '' } }, e => { if (seq === PL.seq) PL.err = e.message }).finally(() => { if (seq === PL.seq) { PL.pending = false; if (state.view === 'plan') render() } }), 250)
 }
+const chanceCls = c => c >= 0.85 ? 'up' : c < 0.7 ? 'down' : ''
 function plan() {
   const head = `${banner()}<div class="pagehead"><h1>Plan</h1></div>`
   if (!PL.data) {
@@ -1057,53 +1075,61 @@ function plan() {
   }
   const D = PL.data, v = PL.vals
   if (!v) return `${head}<section class="panel setup"><h2>One question first</h2>
-    <p>The forecast is built from your own income, spending, balances and contributions. It only needs your birth year to know how many years are ahead.</p>
+    <p>The forecast is built from your own pay, spending, balances and savings. It only needs your birth year to know how many years are ahead.</p>
     <form class="frow" data-planform="setup"><label class="fl">Birth year<input id="birthyear" type="number" min="${new Date().getFullYear() - 110}" max="${new Date().getFullYear() - 18}" required inputmode="numeric"></label><button class="btn">Show my forecast</button></form>
     ${PL.err ? `<p class="warn" role="alert">${esc(PL.err)}</p>` : ''}
-    <p class="cap">The rest starts from your data, or from defaults where there is none: retirement at ${D.defaults.retire_age}, a Social Security estimate from your years of work (up to ${usd0(D.defaults.ss_monthly)} a month) from ${D.defaults.ss_age}, a plan to age ${D.defaults.end_age}. You can change any of it.</p></section>`
+    <p class="cap">The rest starts from your data, or from defaults where there is none: retirement at ${D.defaults.retire_age}, Social Security of ${usd0(D.defaults.ss_monthly)} a month at ${D.defaults.ss_age} until you add yours from ssa.gov, a plan to age ${D.defaults.end_age}. You can change any of it.</p></section>`
   const dirty = planDirty(), P = dirty && PL.proj ? PL.proj.projection : D.projection, Dp = dirty && PL.proj ? PL.proj.data_projection : D.data_projection
-  const changed = canon(v) !== canon({ birth_year: v.birth_year, events: v.events, vests: { off: v.vests?.off || undefined } })
+  const changed = canon(v) !== canon(dataOnly(v))
   const ra = v.retire_age ?? D.defaults.retire_age, end = v.end_age ?? D.defaults.end_age, age = new Date().getFullYear() - v.birth_year
   const at = (p, age) => (p.years.find(y => y.age === age) || p.years.at(-1)).assets
   const lasts = p => p.run_out ? `Runs out at ${p.run_out}` : `Past ${p.years.at(-1).age}`
   const accts = D.baseline.accounts, acc = id => v.accounts?.[id] || {}
   const included = accts.filter(a => acc(a.id).include ?? a.include), nowV = included.reduce((s, a) => s + Math.max(0, a.balance), 0)
-  const knob = ([k, label, kind]) => {
-    const base = knobBase(k, P.ss), cur = v[k] ?? base, ch = v[k] != null && v[k] !== base, saved = D.doc[k] != null && D.doc[k] === v[k]
-    const src = fromData(k) ? `Average of your last ${D.baseline.months} month${D.baseline.months === 1 ? '' : 's'}` : k === 'ss_monthly' ? `Estimated from ${P.ss.years_worked} years of work, assuming you started at 22. Your real figure is at ssa.gov/myaccount` : 'Default'
-    const note = ch ? `${saved ? 'Set by you.' : `Trying ${showVal(kind, cur)}.`} ${fromData(k) ? 'Your data' : k === 'ss_monthly' ? 'Estimate' : 'Default'}: ${showVal(kind, base)}. <button class="linkbtn" data-act="knobreset" data-v="${k}">Use ${fromData(k) ? 'my data' : 'the default'}</button>` : src + '.'
+  const knob = ([k, label, kind, help]) => {
+    const base = knobBase(k, P), cur = v[k] ?? base, ch = v[k] != null && v[k] !== base, saved = D.doc[k] != null && D.doc[k] === v[k]
+    const from = fromData(k) ? 'Your data' : k === 'mortgage_monthly' || k === 'mortgage_last_year' ? 'None' : 'Default'
+    const src = k === 'income_monthly' ? `From your last ${D.baseline.months} months, counting the sources ticked below.` : k === 'spending_monthly' ? `Average of your last ${D.baseline.months} months.`
+      : k === 'stock_yearly' ? `Your RSU and ESPP sales over the last ${D.baseline.months} months.` : k === 'ss_monthly' ? 'Default: put in yours from ssa.gov.' : from === 'None' ? 'Not in your data.' : 'Default.'
+    const reset = `<button class="linkbtn" data-act="knobreset" data-v="${k}">${from === 'None' ? 'Clear' : `Use ${fromData(k) ? 'my data' : 'the default'}`}</button>`
+    const note = ch ? `${saved ? 'Set by you.' : `Trying ${showVal(kind, cur)}.`} ${from === 'None' ? '' : `${from}: ${showVal(kind, base)}. `}${reset}` : src
+    const lim = { ss_age: ' min="62" max="70"', mortgage_last_year: ` min="${new Date().getFullYear() - 1}"` }[k] || ''
     const input = privacy.on && kind === 'money' ? '<span class="muted">$•••</span>'
       : k === 'retire_age' ? `<input id="kn-${k}" type="range" min="${age}" max="${Math.max(80, age)}" step="1" value="${cur}" data-knob="${k}" data-kind="${kind}">`
-      : `<input id="kn-${k}" type="number" step="${kind === 'money' ? 100 : kind === 'pct' ? 0.5 : 1}" value="${kind === 'money' ? Math.round(cur / 100) : cur}" data-knob="${k}" data-kind="${kind}" inputmode="decimal">`
-    return `<div class="knob${k === 'retire_age' ? ' wide' : ''}${ch ? ' chg' : ''}"><label for="kn-${k}">${label}${k === 'retire_age' ? `: <b id="ra-v">${cur}</b>` : ''}</label>${input}<div class="src">${note}</div></div>`
+      : `<input id="kn-${k}" type="number"${lim} step="${kind === 'money' ? 100 : kind === 'pct' ? 0.5 : 1}" value="${cur === '' ? '' : kind === 'money' ? Math.round(cur / 100) : cur}" data-knob="${k}" data-kind="${kind}" inputmode="decimal">`
+    return `<div class="knob${k === 'retire_age' || k === 'stock_yearly' ? ' wide' : ''}${ch ? ' chg' : ''}"><label for="kn-${k}">${label}${k === 'retire_age' ? `: <b id="ra-v">${cur}</b>` : ''}</label>${input}
+      <div class="src"><span class="help">${help(P, v)}</span> ${note}</div>${k === 'income_monthly' ? sourcesList(v) : k === 'stock_yearly' ? stockUntil(P, v) : ''}</div>`
   }
-  const evs = [...(v.events || []).map((e, i) => ({ ...e, i })), ...[[ra, `Retire at ${ra}`], [v.ss_age ?? D.defaults.ss_age, `Social Security, ${usd0(P.ss.monthly)} a month`], [end, `End of plan at ${end}`]].map(([age, text]) => ({ year: v.birth_year + age, text, fixed: true }))]
+  const sa = D.baseline.surplus_account, saName = sa && accts.find(a => a.id === sa)?.name
+  const surplusOpts = [['', saName ? `${saName} (where your savings went)` : 'Extra savings (grows 2% a year)'], ...(saName ? [['extra', 'Extra savings (grows 2% a year)']] : []), ...included.filter(a => a.id !== sa).map(a => [a.id, a.name])]
+  const surplus = `<div class="knob wide${v.surplus_account ? ' chg' : ''}"><label for="kn-surplus">Money left over each year goes to</label><select id="kn-surplus" data-surplus>${surplusOpts.map(([id, n]) => `<option value="${esc(id)}" ${(v.surplus_account || '') === id ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <div class="src"><span class="help">Pay left after spending each year is saved here and grows at its rate.</span> ${v.surplus_account ? 'Set by you.' : saName ? 'From your data: most of what you moved out of checking went there.' : 'Default.'}</div></div>`
+  const mort = v.mortgage_last_year && v.mortgage_monthly ? [[v.mortgage_last_year - v.birth_year, `Last mortgage payment (${usd0(v.mortgage_monthly)} a month)`]] : []
+  const evs = [...(v.events || []).map((e, i) => ({ ...e, i })), ...[[ra, `Retire at ${ra}`], [v.ss_age ?? D.defaults.ss_age, `Social Security, ${usd0(P.ss.monthly)} a month`], [end, `End of plan at ${end}`], ...mort].map(([age, text]) => ({ year: v.birth_year + age, text, fixed: true }))]
     .sort((a, b) => a.year - b.year)
   const evText = e => e.fixed ? e.text : `${esc(e.name)}: ${e.kind === 'expense' ? `one-time expense of ${usd0(e.amount)}` : e.kind === 'income' ? `one-time income of ${usd0(e.amount)}`
     : `${e.kind === 'spending' ? 'spending' : 'income'} ${e.amount < 0 ? 'down' : 'up'} ${usd0(Math.abs(e.amount))} a year${e.until ? ` until ${e.until}` : ''}`}`
-  const vestOn = !v.vests?.off && D.baseline.unvested > 0
   const E = PL.ev
   return `${head}
-  <p class="sub">In today's dollars. Every number starts from your last ${D.baseline.months} months, your balances and your contributions, and you can try others below.${PL.pending ? ' <span role="status">Updating…</span>' : ''}</p>
+  <p class="sub">In today's dollars. Every number starts from your last ${D.baseline.months} months, your balances and your savings, and you can try others below.${PL.pending ? ' <span role="status">Updating…</span>' : ''}</p>
   ${PL.err ? notice(PL.err) : ''}
   <section class="panel${PL.pending ? ' stale' : ''}">
-    <p class="lead">${changed ? 'With your changes, retiring' : 'Retiring'} at ${ra}, you’d have about ${r10k(at(P, ra))} then. <span class="${P.run_out ? 'down' : ''}">${P.run_out ? `The money runs out at ${P.run_out}.` : `It lasts past ${end}.`}</span></p>
-    ${changed ? `<p class="was">From your data alone: about ${r10k(at(Dp, D.defaults.retire_age))} at ${D.defaults.retire_age}, and ${Dp.run_out ? `it runs out at ${Dp.run_out}` : `it lasts past ${Dp.years.at(-1).age}`}.</p>` : ''}
+    <p class="lead">${changed ? 'With your changes, retiring' : 'Retiring'} at ${ra}, you’d have about ${r10k(at(P, ra))} then. <span class="${chanceCls(P.chance)}">It lasts to ${end} in ${pct(P.chance)} of possible markets</span>${P.run_out ? `, and runs out at ${P.run_out} in a steady one.` : '.'}</p>
+    ${changed ? `<p class="was">From your data alone, retiring at ${D.defaults.retire_age}: about ${r10k(at(Dp, D.defaults.retire_age))} then, lasting in ${pct(Dp.chance)} of markets.</p>` : ''}
     <div class="pstats">
       <div><span>Included assets now</span><b>${r10k(nowV)}</b></div>
       <div><span>At retirement (${ra})</span><b>${r10k(at(P, ra))}</b>${changed ? `<small>Your data: ${r10k(at(Dp, D.defaults.retire_age))}</small>` : ''}</div>
-      <div><span>At end of plan (${end})</span><b>${P.run_out ? usd0(0) : r10k(P.years.at(-1).assets)}</b>${changed ? `<small>Your data: ${Dp.run_out ? usd0(0) : r10k(Dp.years.at(-1).assets)}</small>` : ''}</div>
-      <div><span>Money lasts</span><b>${lasts(P)}</b>${changed ? `<small>Your data: ${lasts(Dp)}</small>` : ''}</div>
+      <div><span>Lasts to ${end} in</span><b class="${chanceCls(P.chance)}">${pct(P.chance)} of markets</b>${changed ? `<small>Your data: ${pct(Dp.chance)}</small>` : ''}</div>
+      <div><span>In a steady market</span><b>${lasts(P)}</b>${changed ? `<small>Your data: ${lasts(Dp)}</small>` : ''}</div>
     </div>
     ${planChart(P, changed ? Dp : null, ra, v)}
-    <div class="legend"><span><i style="background:var(--income)"></i>${changed ? (dirty ? 'With your changes (not saved)' : 'Your plan') : 'From your data'}</span>${changed ? '<span><i class="dash"></i>From your data</span>' : ''}<span>Shaded: retirement</span><span style="color:var(--spend)">Events</span><span style="color:var(--cat-x2)">Goals</span></div>
-    <p class="note">A direction, not a prediction: today's dollars, steady growth with no market swings, and flat tax rates (taxable 12%, pre-tax 20%, Roth 0%, plus 10% on pre-tax and Roth before 59½).</p>
+    <div class="legend"><span><i style="background:var(--income)"></i>${changed ? (dirty ? 'With your changes (not saved)' : 'Your plan') : 'From your data'}, steady market</span>${changed ? '<span><i class="dash"></i>From your data</span>' : ''}<span><i class="dash low"></i>A poor market: 1 in 10 do worse</span><span>Shaded: retirement</span><span style="color:var(--spend)">Events</span><span style="color:var(--cat-x2)">Goals</span></div>
+    <p class="note">How to read it: the solid line is a market that grows the same every year. Real markets swing, and a crash early in retirement hurts most, so the plan is also run over 500 possible markets with swings like a mostly-stock portfolio. Aim for 80% or more. Taxes are flat (taxable 12%, pre-tax 20%, Roth 0%, plus 10% on pre-tax and Roth before 59½).</p>
   </section>
   <section class="panel" style="margin-top:16px"><div class="phead"><h2>Your numbers</h2>
     ${dirty ? `<div class="frow" style="margin:0"><button class="btn" data-act="plankeep" ${PL.busy ? 'disabled' : ''}>Keep these changes</button><button class="btn ghost" data-act="planundo">Undo changes</button></div>` : changed ? '<button class="linkbtn" data-act="planalldata">Use all my data again</button>' : ''}</div>
-    <p class="cap" style="margin:0 0 6px">Filled in from your data, or a default where there is none. Change any to try a different plan; the chart compares it with your data. Nothing is saved until you keep the changes.${privacy.on ? ' Amounts are hidden; show them to change these.' : ''}</p>
-    <div class="knobs">${KNOBS.map(knob).join('')}
-      <div class="knob wide${v.surplus_account ? ' chg' : ''}"><label for="kn-surplus">Money left over each year goes to</label><select id="kn-surplus" data-surplus>${[['', 'Extra savings (grows 2% a year)'], ...included.map(a => [a.id, a.name])].map(([id, n]) => `<option value="${esc(id)}" ${(v.surplus_account || '') === id ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select><div class="src">${v.surplus_account ? 'Set by you. Default: Extra savings.' : 'Default.'}</div></div></div>
+    <p class="cap" style="margin:0 0 6px">Filled in from your data, or a default where there is none. Change any to try a different plan; the chart and the numbers above update as you go. Nothing is saved until you keep the changes.${privacy.on ? ' Amounts are hidden; show them to change these.' : ''}</p>
+    ${KNOBS.map(([title, list], i) => `<h3 class="kgroup">${title}</h3><div class="knobs">${list.map(knob).join('')}${i === 0 ? surplus : ''}</div>`).join('')}
   </section>
   ${goalsHTML(v)}
   <section class="panel" style="margin-top:16px">
@@ -1114,13 +1140,12 @@ function plan() {
         return `<tr class="${ch ? 'chg' : ''}"><td><b>${esc(a.name)}</b><br><small class="muted">${esc(a.institution)}${ch ? ` · changed <button class="linkbtn" data-act="acctreset" data-v="${esc(a.id)}">use my data</button>` : ''}</small></td>
           <td><input type="checkbox" id="pa-${esc(a.id)}-include" data-acct="${esc(a.id)}" data-f="include" ${on ? 'checked' : ''} aria-label="Include ${esc(a.name)}"></td>
           <td><select id="pa-${esc(a.id)}-bucket" data-acct="${esc(a.id)}" data-f="bucket" aria-label="Kind of ${esc(a.name)}">${[['cash', 'Cash'], ['taxable', 'Taxable'], ['pretax', 'Pre-tax'], ['roth', 'Roth']].map(([b, l]) => `<option value="${b}" ${(o.bucket ?? a.bucket) === b ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
-          <td><input type="number" step="0.5" class="pnum" id="pa-${esc(a.id)}-growth" data-acct="${esc(a.id)}" data-f="growth" value="${o.growth ?? a.growth}" aria-label="Growth of ${esc(a.name)}, % a year">%${a.interest ? `<br><small class="muted">paid ${usd0(a.interest)} a year</small>` : ''}</td>
+          <td><input type="number" step="0.5" class="pnum" id="pa-${esc(a.id)}-growth" data-acct="${esc(a.id)}" data-f="growth" value="${o.growth ?? acctGrowth(a)}" aria-label="Growth of ${esc(a.name)}, % a year">%${a.interest ? `<br><small class="muted">paid ${usd0(a.interest)} a year</small>` : ''}</td>
           <td>${privacy.on ? '$•••' : `<input type="number" step="500" class="pnum" id="pa-${esc(a.id)}-contribution" data-acct="${esc(a.id)}" data-f="contribution" value="${Math.round((o.contribution ?? a.contribution) / 100)}" aria-label="Added to ${esc(a.name)} a year, dollars">`}${addedNote(a)}</td>
           <td>${usd0(a.balance)}</td></tr>` }).join('')}</tbody></table></div>
-      <p class="cap">Added a year starts from money that came from outside your accounts in the last ${D.baseline.months} months: payroll deposits and ESPP sales. RSU sales are left out (future vests come from your unvested stock), and so are moves between your own accounts, which are already part of your surplus. A savings or checking account that paid interest grows at the rate it paid on its average balance. Growth is before inflation. Cards, loans and property are left out unless you include them.</p></details>
-    <details class="psec" ${PL.open?.events ? 'open' : ''} data-sec="events"><summary>Events <span class="muted">${evs.length + (vestOn ? 1 : 0)} in the plan</span></summary>
+      <p class="cap">Added a year is money that came into the account from outside your accounts in the last ${D.baseline.months} months, like 401(k) payroll contributions, until you retire. Stock sales count as stock pay instead, and moves between your own accounts are already part of what’s left over. Investments grow at the plan’s growth unless you set their own; a savings or checking account grows at the interest it paid on its average balance. Growth is before inflation. Cards, loans and property are left out unless you include them.</p></details>
+    <details class="psec" ${PL.open?.events ? 'open' : ''} data-sec="events"><summary>Events <span class="muted">${evs.length} in the plan</span></summary>
       ${evs.map(e => `<div class="pev"><span class="y">${e.year}</span><span class="d">${evText(e)}</span>${e.fixed ? '<span class="muted" style="font-size:12px">Set in your numbers</span>' : `<button class="linkbtn" data-act="evedit" data-i="${e.i}">Edit</button><button class="linkbtn" data-act="evdel" data-i="${e.i}">Remove</button>`}</div>`).join('')}
-      ${D.baseline.unvested > 0 ? `<div class="pev"><span class="y">${new Date().getFullYear()}</span><span class="d">${vestOn ? vestText(P.vests) : '<span class="muted">Unvested stock is left out</span>'}</span><button class="linkbtn" data-act="vests">${vestOn ? 'Leave out' : 'Add back'}</button></div>` : ''}
       <form class="evform" data-planform="event">
         <label>Kind<select name="kind">${[['expense', 'One-time expense'], ['income', 'One-time income'], ['spending', 'Spending change a year'], ['earning', 'Income change a year']].map(([k, l]) => `<option value="${k}" ${E.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label>Name<input name="name" value="${esc(E.name)}" placeholder="New roof" maxlength="80" required></label>
@@ -1128,68 +1153,79 @@ function plan() {
         <label>Amount, $<input name="amount" type="number" step="100" value="${E.amount}" required></label>
         <label>Until (optional)<input name="until" type="number" value="${E.until}"></label>
         <button class="btn ghost">${E.editing != null ? 'Save event' : 'Add event'}</button></form>
-      <p class="cap">A yearly change can be negative, like a mortgage paid off. Events are part of the what-if too until you keep the changes.</p></details>
-    <details class="psec" ${PL.open?.years ? 'open' : ''} data-sec="years"><summary>Year by year <span class="muted">${P.years.length} years</span></summary>
-      <div class="tblwrap"><table class="invtbl ptbl"><thead><tr><th>Year</th><th>Age</th><th>Income</th><th>Spending</th><th>Withdrawn</th><th>Tax</th><th>Assets</th></tr></thead><tbody>
-      ${P.years.map(y => `<tr class="${y.shortfall ? 'short' : ''}"><td>${y.year}</td><td>${y.age}</td><td>${usd0(y.income)}</td><td>${usd0(y.spending)}</td><td>${y.withdrawn ? usd0(y.withdrawn) : '—'}</td><td>${y.taxes ? usd0(y.taxes) : '—'}</td><td>${y.shortfall ? `<span class="down">${usd0(-y.shortfall)}</span>` : usd0(y.assets)}</td></tr>`).join('')}</tbody></table></div></details>
+      <p class="cap">A yearly change can be negative, like a car loan paid off. Events are part of the what-if too until you keep the changes.</p></details>
+    <details class="psec" ${PL.open?.years ? 'open' : ''} data-sec="years"><summary>Year by year <span class="muted">${P.years.length} years, steady market</span></summary>
+      <div class="tblwrap"><table class="invtbl ptbl"><thead><tr><th>Year</th><th>Age</th><th>Income</th><th>Spending</th><th>Withdrawn</th><th>Tax</th><th>Assets</th><th>Poor market</th></tr></thead><tbody>
+      ${P.years.map((y, i) => `<tr class="${y.shortfall ? 'short' : ''}"><td>${y.year}</td><td>${y.age}</td><td>${usd0(y.income)}</td><td>${usd0(y.spending)}</td><td>${y.withdrawn ? usd0(y.withdrawn) : '—'}</td><td>${y.taxes ? usd0(y.taxes) : '—'}</td><td>${y.shortfall ? `<span class="down">${usd0(-y.shortfall)}</span>` : usd0(y.assets)}</td><td>${usd0(P.low[i])}</td></tr>`).join('')}</tbody></table></div></details>
   </section>`
+}
+// An investment account grows at the plan's growth unless it has its own; cash at what the data says.
+const acctGrowth = a => a.type === 'investment' ? PL.vals.growth ?? PL.data.defaults.growth : a.growth
+// The income sources behind take-home pay, to tick off pay that has stopped or money from your own accounts.
+function sourcesList(v) {
+  const B = PL.data.baseline, rest = B.income_monthly * 12 - B.income_sources.reduce((s, x) => s + x.amount, 0)
+  if (!B.income_sources.length) return ''
+  return `<div class="psrcs">${B.income_sources.map(s => { const on = v.income_sources?.[s.name] ?? !s.stopped
+    return `<label class="psrc${on ? '' : ' off'}"><input type="checkbox" data-src="${esc(s.name)}" ${on ? 'checked' : ''}><span class="n">${esc(s.name)}</span><span class="muted">${usd0(s.amount)} a year · last ${mName(s.last.slice(0, 7))}${s.stopped ? ' · <b>stopped</b>' : ''}</span></label>` }).join('')}
+    ${rest > 0 ? `<p class="cap" style="margin:4px 0 0">Plus ${usd0(rest)} a year from smaller sources, always counted.</p>` : ''}
+    <p class="cap" style="margin:4px 0 0">Untick pay that won’t keep coming; a source with nothing in the last 3 months starts unticked. Money from your own accounts, like stock sale proceeds from a brokerage that isn’t connected, can also be set to the Transfer category.${v.income_monthly != null ? ' <b>You set the pay yourself, so ticking these doesn’t change it.</b>' : ''}</p></div>`
+}
+function stockUntil(P, v) {
+  const s = P.stock, B = PL.data.baseline, yrs = s.yearly > 0 ? s.granted / s.yearly : 0
+  const opts = [['granted', `Only stock already granted: ${usd0(s.granted)} after tax${yrs ? `, about ${yrs < 1 ? 'less than a year' : `${Math.round(yrs)} year${Math.round(yrs) === 1 ? '' : 's'}`}` : ''}`], ['retire', 'Until I retire: new grants and ESPP keep coming'], ['none', 'Leave stock pay out']]
+  return `<label class="sub2" for="kn-stockuntil">It keeps coming</label><select id="kn-stockuntil" data-stockuntil>${opts.map(([k, l]) => `<option value="${k}" ${(v.stock_until || 'granted') === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+    <div class="src">${B.unvested > 0 ? `Unvested stock at the last sync: ${usd0(B.unvested)}, at ${s.after_tax_pct}% after tax (assumed). What hasn’t vested when you retire is forfeited.` : 'Your brokerage doesn’t report unvested stock, so “only stock already granted” pays nothing.'}</div>`
 }
 // What an account's Added a year is made of, and what was left out of it.
 function addedNote(a) {
-  const inn = [a.deposits && `${usd0(a.deposits)} deposits`, a.espp && `${usd0(a.espp)} ESPP`].filter(Boolean)
-  const out = [a.rsu && `${usd0(a.rsu)} RSU sales`, a.unclear && `${usd0(a.unclear)} unclear stock sales`, a.internal && `${usd0(a.internal)} from your own accounts`].filter(Boolean)
+  const inn = [a.deposits && `${usd0(a.deposits)} deposits`].filter(Boolean)
+  const out = [a.rsu + a.espp && `${usd0(a.rsu + a.espp)} stock sales (stock pay)`, a.unclear && `${usd0(a.unclear)} unclear stock sales`, a.internal && `${usd0(a.internal)} from your own accounts`].filter(Boolean)
   return inn.length || out.length ? `<br><small class="muted">${inn.join(' + ')}${out.length ? `${inn.length ? '; ' : ''}left out: ${out.join(', ')}` : ''}</small>` : ''
-}
-function vestText(vs) {
-  const D = PL.data, m = D.baseline.months, pace = D.baseline.accounts.reduce((s, a) => s + a.rsu, 0)
-  const how = vs.source === 'pace' ? `at the pace of your RSU sales (${usd0(pace)} a year over the last ${m} months)`
-    : vs.source === 'owner' ? '(set by you)' : `(assumed: no RSU sales in your last ${m} months to set the pace)`
-  return `Unvested stock, ${usd0(vs.total)} at the last sync: ${usd0(vs.total * vs.after_tax_pct / 100)} after tax (${vs.after_tax_pct}%, assumed), vesting over ${vs.years} year${vs.years === 1 ? '' : 's'} ${how}. Only while you're working; what hasn't vested at retirement is forfeited.`
 }
 // Where the forecast's starting numbers come from, what was left out so nothing counts twice, and what is
 // assumed rather than read from the data.
 function sourcesHTML(P, accts) {
   const D = PL.data, B = D.baseline, m = B.months, name = id => accts.find(a => a.id === id)?.name || id
   const inPlan = accts.filter(a => PL.vals.accounts?.[a.id]?.include ?? a.include), sum = (list, f) => list.reduce((s, a) => s + (a[f] || 0), 0)
-  const rsu = sum(accts, 'rsu'), internal = sum(accts, 'internal'), deposits = sum(inPlan, 'deposits'), espp = sum(inPlan, 'espp')
+  const internal = sum(accts, 'internal'), deposits = sum(inPlan, 'deposits')
   const item = (head, body) => `<div class="pev"><span class="d"><b>${head}</b><br><span class="muted">${body}</span></span></div>`
-  const srcs = B.income_sources.map(s => `<button class="linkbtn" data-act="plansrc" data-v="${esc(s.name)}">${esc(s.name)}</button> ${usd0(s.amount)} a year (${s.count})`).join(' · ')
   const left = []
-  if (rsu) left.push(`${usd0(rsu)} a year of RSU sales: ${B.unvested > 0 ? 'future vests come from your unvested stock instead, so they count once' : 'your brokerage doesn’t report unvested stock, so no future vests are in the plan. Add an income event if you expect more'}.`)
   if (internal) left.push(`${usd0(internal)} a year moved between your own accounts (journals, Roth conversions, withdrawals): not new money.`)
   if (B.paired) left.push(`${usd0(B.paired)} a year moved between your cash and investment accounts that wasn’t matched as a transfer (up to 10 days apart): left out of income, spending and contributions.`)
   if (B.interest_monthly) left.push(`${usd0(B.interest_monthly * 12)} a year of interest paid into your deposit accounts: it’s their growth, so it isn’t income too.`)
   const unclear = B.unclear_sales.map(u => `${u.date} ${esc(name(u.account_id))}: ${usd0(u.amount)}`).join(' · ')
   const yr = P.years[0]?.year
   return `<details class="psec" ${PL.open?.sources ?? true ? 'open' : ''} data-sec="sources"><summary>Where the numbers come from <span class="muted">so nothing counts twice</span></summary>
-    ${item(`Income: ${usd0(B.income_monthly)} a month`, `The average of your last ${m} months of deposits into checking, savings and cards. Largest: ${srcs || 'none'}. If one is money from your own accounts, like stock sale proceeds from a brokerage that isn’t connected, set its category to Transfer and it leaves the forecast.`)}
-    ${item(`Added to investments: ${usd0(deposits + espp)} a year`, `${usd0(deposits)} of payroll and other deposits from outside your accounts${espp ? ` and ${usd0(espp)} of ESPP sales` : ''}, until you retire.`)}
+    ${item(`Take-home pay: ${usd0(P.income_from_data)} a month`, `The average of your last ${m} months of deposits into checking, savings and cards (${usd0(B.income_monthly)} a month), less the sources you don’t count. Pick them under Your numbers.`)}
+    ${item(`Stock pay: ${usd0(B.stock_yearly)} a year`, `Your RSU and ESPP share sales over the last ${m} months, after the shares held back for tax. The money is moved out and saved like pay, so the sales aren’t counted as savings into the stock account too.`)}
+    ${item(`Added to investments: ${usd0(deposits)} a year`, `Payroll and other deposits into your investment accounts from outside your accounts, until you retire.`)}
     ${left.length ? item('Left out', left.join('<br>')) : ''}
-    ${unclear ? item('Stock sales we couldn’t place, left out', `${unclear}. None follows an RSU vest or ESPP purchase in the same account (in an account with both, within the week before). If they’re ESPP, add them to that account’s Added a year under Accounts; if RSUs, your unvested stock already covers them.`) : ''}
+    ${unclear ? item('Stock sales we couldn’t place, left out', `${unclear}. None follows an RSU vest or ESPP purchase in the same account (in an account with both, within the week before). If they’re pay, raise Stock pay in Your numbers.`) : ''}
     ${yr && P.elapsed > 0 ? item(`${yr}: the rest of the year`, `Only the ${pct(1 - P.elapsed)} of ${yr} still ahead is projected; what’s past is already in your balances.`) : ''}
-    ${item('Assumed, not from your data', `Investment growth, inflation, Social Security (an estimate from your years of work, assuming you started at 22: your real figure is at ssa.gov/myaccount), retirement spending, the after-tax share of vests and the flat tax rates. Change any of them in Your numbers and Accounts.`)}
+    ${item('Assumed, not from your data', `Investment growth, inflation, market swings, Social Security until you put in yours, health costs, retirement spending, the after-tax share of unvested stock and the flat tax rates. Change any of them in Your numbers and Accounts.`)}
   </details>`
 }
-// Included assets by age: the plan as a line and area, the data-only plan dashed, retirement shaded,
-// events (orange) and dated goals (purple) as markers.
+// Included assets by age: the plan as a line and area, the data-only plan dashed, a poor market dotted,
+// retirement shaded, events (orange) and dated goals (purple) as markers.
 function planChart(P, Dp, ra, v) {
   const W = 760, H = 270, L = 56, R = 752, T = 18, B = 240, y0 = P.years[0].age, y1 = P.years.at(-1).age
   const hi = Math.max(1, ...P.years.map(y => y.assets), ...(Dp ? Dp.years.map(y => y.assets) : [])) / 100 * 1.08, step = niceStep(hi, 4), top = Math.ceil(hi / step) * step
   const x = age => L + (R - L) * (age - y0) / Math.max(1, y1 - y0), y = c => B - (B - T) * (c / 100) / top
-  const path = p => 'M' + p.years.map(r => `${f1(x(r.age))},${f1(y(r.assets))}`).join('L')
+  const path = (p, f = r => r.assets) => 'M' + p.years.map((r, i) => `${f1(x(r.age))},${f1(y(f(r, i)))}`).join('L')
   let g = ''
   for (let val = 0; val <= top; val += step) g += `<line class="gridline" x1="${L}" x2="${R}" y1="${f1(y(val * 100))}" y2="${f1(y(val * 100))}"/><text x="${L - 8}" y="${f1(y(val * 100) + 4)}" text-anchor="end">${axis(val)}</text>`
   for (let a = Math.ceil(y0 / 5) * 5; a <= y1; a += 5) g += `<text x="${f1(x(a))}" y="${H - 8}" text-anchor="middle">${a}</text>`
   if (ra <= y1) g += `<rect x="${f1(x(Math.max(ra, y0)))}" y="${T - 8}" width="${f1(R - x(Math.max(ra, y0)))}" height="${B - T + 8}" style="fill:var(--panel2)"/>`
   g += `<path d="${path(P)}L${f1(x(y1))},${B}L${f1(x(y0))},${B}Z" style="fill:var(--income)" opacity=".14"/>`
   if (Dp) g += `<path d="${path(Dp)}" fill="none" style="stroke:var(--muted)" stroke-width="2" stroke-dasharray="6 5"/>`
+  g += `<path d="${path(P, (r, i) => P.low[i])}" fill="none" style="stroke:var(--spend)" stroke-width="2" stroke-dasharray="2 4" stroke-linecap="round"/>`
   g += `<path d="${path(P)}" fill="none" style="stroke:var(--income)" stroke-width="2.5"/>`
   const marks = [...(v.events || []).map(e => [e.year - v.birth_year, e.name, 'var(--spend)']), ...(PL.goals || []).filter(gl => gl.target_date).map(gl => [+gl.target_date.slice(0, 4) - v.birth_year, gl.name, 'var(--cat-x2)'])]
     .filter(([age]) => age >= y0 && age <= y1)
   marks.forEach(([age, name, color], i) => { g += `<line x1="${f1(x(age))}" x2="${f1(x(age))}" y1="${T}" y2="${B}" style="stroke:${color}" stroke-dasharray="3 3"/><text x="${f1(x(age) + 4)}" y="${T + 12 + (i % 4) * 14}" style="fill:${color}">${esc(clip(name, 22))}</text>` })
-  if (P.run_out) g += `<circle cx="${f1(x(P.run_out))}" cy="${B}" r="5" style="fill:var(--err)"><title>Runs out at ${P.run_out}</title></circle>`
-  P.years.forEach(r => { g += `<rect x="${f1(x(r.age) - (R - L) / (y1 - y0 || 1) / 2)}" y="${T}" width="${f1((R - L) / (y1 - y0 || 1))}" height="${B - T}" fill="transparent"><title>${r.year}, age ${r.age}: ${usd0(r.assets)}${r.shortfall ? `, ${usd0(r.shortfall)} short` : ''}</title></rect>` })
-  return `<svg class="pchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Included assets by age, ${P.run_out ? `running out at ${P.run_out}` : `lasting past ${y1}`}">${g}</svg>`
+  if (P.run_out) g += `<circle cx="${f1(x(P.run_out))}" cy="${B}" r="5" style="fill:var(--err)"><title>Runs out at ${P.run_out} in a steady market</title></circle>`
+  P.years.forEach((r, i) => { g += `<rect x="${f1(x(r.age) - (R - L) / (y1 - y0 || 1) / 2)}" y="${T}" width="${f1((R - L) / (y1 - y0 || 1))}" height="${B - T}" fill="transparent"><title>${r.year}, age ${r.age}: ${usd0(r.assets)}${r.shortfall ? `, ${usd0(r.shortfall)} short` : ''}; poor market ${usd0(P.low[i])}</title></rect>` })
+  return `<svg class="pchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Included assets by age, lasting to ${y1} in ${pct(P.chance)} of markets">${g}</svg>`
 }
 function goalsHTML(v) {
   const G = PL.goals || [], D = PL.data, f = PL.goal
@@ -1761,7 +1797,7 @@ document.addEventListener('click', e => {
   else if (a === 'plansrc') { state.f = { ...blankF(), flow: 'in', q: d.v }; go('transactions') }
   else if (a === 'knobreset') { delete PL.vals[d.v]; planChanged() }
   else if (a === 'acctreset') { delete PL.vals.accounts[d.v]; planChanged() }
-  else if (a === 'planalldata') { const v = PL.vals; PL.vals = { birth_year: v.birth_year, events: v.events, vests: v.vests }; planChanged() }
+  else if (a === 'planalldata') { PL.vals = dataOnly(PL.vals); planChanged() }
   else if (a === 'planundo') { clearTimeout(PL.timer); PL.seq++; PL.pending = false; PL.vals = clone(PL.data.doc); PL.proj = null; PL.err = ''; render() }
   else if (a === 'plankeep') {
     PL.busy = true; render()
@@ -1769,7 +1805,6 @@ document.addEventListener('click', e => {
   }
   else if (a === 'evdel') { PL.vals.events.splice(+d.i, 1); planChanged() }
   else if (a === 'evedit') { const e = PL.vals.events[+d.i]; PL.ev = { ...e, amount: e.amount / 100, until: e.until || '', editing: +d.i }; render(); $('[data-planform="event"] [name="name"]')?.focus() }
-  else if (a === 'vests') { PL.vals.vests = { ...PL.vals.vests, off: !PL.vals.vests?.off || undefined }; planChanged() }
   else if (a === 'goalnew') { PL.goal = {}; PL.gErr = ''; render(); $('[data-planform="goal"] [name="name"]')?.focus() }
   else if (a === 'goaledit') { PL.goal = clone(PL.goals.find(g => g.id === +d.v)); PL.gErr = ''; render(); $('[data-planform="goal"] [name="name"]')?.focus() }
   else if (a === 'goalcancel') { PL.goal = null; render() }
@@ -1778,15 +1813,22 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   const t = e.target
   if (t.dataset.surplus !== undefined) tryVal(PL.vals, 'surplus_account', t.value, '')
-  else if (t.dataset.knob) {
+  else if (t.dataset.stockuntil !== undefined) tryVal(PL.vals, 'stock_until', t.value, 'granted')
+  else if (t.dataset.src !== undefined) {
+    const s = PL.data.baseline.income_sources.find(x => x.name === t.dataset.src), all = PL.vals.income_sources ||= {}
+    if (t.checked === !s.stopped) delete all[s.name]; else all[s.name] = t.checked
+    if (!Object.keys(all).length) delete PL.vals.income_sources
+    planChanged()
+  } else if (t.dataset.knob) {
     const k = t.dataset.knob, kind = t.dataset.kind, n = kind === 'money' ? Math.round(+t.value * 100) : +t.value
-    if (t.value !== '' && Number.isFinite(n)) tryVal(PL.vals, k, n, knobBase(k, (PL.proj?.projection || PL.data.projection)?.ss))
+    if (t.value === '') tryVal(PL.vals, k, '')
+    else if (Number.isFinite(n)) tryVal(PL.vals, k, n, knobBase(k, PL.proj?.projection || PL.data.projection))
   } else if (t.dataset.acct) {
     const id = t.dataset.acct, f = t.dataset.f, base = PL.data.baseline.accounts.find(a => a.id === id)
     const n = f === 'include' ? t.checked : f === 'bucket' ? t.value : f === 'contribution' ? Math.round(+t.value * 100) : +t.value
     if (typeof n === 'number' && (t.value === '' || !Number.isFinite(n))) return
     const all = PL.vals.accounts ||= {}, o = all[id] ||= {}
-    if (n === base[f]) delete o[f]; else o[f] = n
+    if (n === (f === 'growth' ? acctGrowth(base) : base[f])) delete o[f]; else o[f] = n
     if (!Object.keys(o).length) delete all[id]
     if (!Object.keys(all).length) delete PL.vals.accounts
     planChanged()
