@@ -348,6 +348,18 @@ func (s simplefinClient) syncItem(ctx context.Context, db *sql.DB, itemID, acces
 		if since := last.Add(-14 * 24 * time.Hour); since.After(start) {
 			start = since
 		}
+		// A row still pending from before that is read again until it posts (brokerage sales can stay pending
+		// for weeks); a pending row older than the floor stays as it is.
+		var pending sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT MIN(t.date)::text FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE a.item_id=$1 AND t.pending`, itemID).Scan(&pending); err != nil {
+			return "", err
+		}
+		if d, err := time.Parse(time.DateOnly, pending.String); err == nil && d.Before(start) {
+			start = d
+			if d.Before(floor) {
+				start = floor
+			}
+		}
 	}
 	windowDate := start.Format("2006-01-02")
 	u, err := url.Parse(accessURL)

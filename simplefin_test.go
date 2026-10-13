@@ -181,6 +181,19 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 	if len(windows) != 3 || filters[2] != "" || windows[2][0] < now.Add(-14*24*time.Hour).Unix()-60 || windows[2][0] > now.Add(-14*24*time.Hour).Unix()+60 {
 		t.Errorf("repeat sync should read from 14 days before the last one: %v", windows)
 	}
+	// A row still pending from 30 days ago is read again, back to its date.
+	if _, err := db.Exec(`INSERT INTO transactions(id,account_id,date,amount,name,pending) VALUES('old-hold','sf:checking',$1,-500,'SHARESALE',true)`, now.Add(-30*24*time.Hour).Format(time.DateOnly)); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	a.routes().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/sync", nil))
+	if want := now.Add(-30 * 24 * time.Hour).Truncate(24 * time.Hour).Unix(); response.Code != 200 || len(windows) != 4 || windows[3][0] != want {
+		t.Errorf("sync with an old pending row: HTTP %d, windows %v, want a start of %d", response.Code, windows, want)
+	}
+	var stale int // not sent again, so it was a hold that went away
+	if err := db.QueryRow(`SELECT COUNT(*) FROM transactions WHERE id='old-hold'`).Scan(&stale); err != nil || stale != 0 {
+		t.Errorf("old pending row left behind: %d, %v", stale, err)
+	}
 	var holdings int // both syncs send the holding; the second replaces the first
 	if err := db.QueryRow(`SELECT COUNT(*) FROM holdings WHERE account_id='sf:credit' AND raw->>'symbol'='ACME'`).Scan(&holdings); err != nil || holdings != 1 {
 		t.Errorf("holdings = %d, %v", holdings, err)
@@ -190,7 +203,7 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	a.routes().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/sync", nil))
-	if response.Code != 200 || len(windows) != 5 {
+	if response.Code != 200 || len(windows) != 6 {
 		t.Errorf("stale sync: HTTP %d, windows %v", response.Code, windows)
 	}
 	response = httptest.NewRecorder()
@@ -207,7 +220,7 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	a.routes().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/sync", nil))
-	if response.Code != 200 || len(windows) != 8 || filters[5] != "" || filters[6] != "credit" || filters[7] != "credit" || windows[7][1] != windows[5][0] {
+	if response.Code != 200 || len(windows) != 9 || filters[6] != "" || filters[7] != "credit" || filters[8] != "credit" || windows[8][1] != windows[6][0] {
 		t.Errorf("new account backfill: HTTP %d, windows %v, filters %q", response.Code, windows, filters)
 	}
 	var creditBalance int64
@@ -226,8 +239,8 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 		t.Errorf("failed sync: HTTP %d %s, last_error %q", response.Code, response.Body.String(), lastError)
 	}
 	var spent int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM simplefin_requests`).Scan(&spent); err != nil || spent != 9 {
-		t.Errorf("tracked requests = %d, %v; want 9 (eight windows and the failed one)", spent, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM simplefin_requests`).Scan(&spent); err != nil || spent != 10 {
+		t.Errorf("tracked requests = %d, %v; want 10 (nine windows and the failed one)", spent, err)
 	}
 	if _, err := db.Exec(`INSERT INTO simplefin_requests(at) SELECT now() - interval '25 hours' UNION ALL SELECT now() FROM generate_series(1, 15)`); err != nil {
 		t.Fatal(err)
@@ -235,7 +248,7 @@ func TestSimplefinClaimAndSync(t *testing.T) {
 	failSync = false
 	response = httptest.NewRecorder()
 	a.routes().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/sync", nil))
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "limit of 24 requests") || len(windows) != 8 {
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "limit of 24 requests") || len(windows) != 9 {
 		t.Errorf("sync over budget: HTTP %d %s, windows %v", response.Code, response.Body.String(), windows)
 	}
 }
