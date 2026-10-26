@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -556,8 +555,7 @@ func main() {
 	if addr := os.Getenv("DEBUG_ADDR"); addr != "" {
 		go func() { slog.Error("debug server", "err", http.ListenAndServe(addr, nil)) }()
 	}
-	server := &http.Server{Addr: env("ADDR", ":8080"), Handler: otelhttp.NewHandler(logRequests(security(mustAuth(ctx, a.routes()))), "http",
-		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/api/health" })),
+	server := &http.Server{Addr: env("ADDR", ":8080"), Handler: tracedHandler(logRequests(security(mustAuth(ctx, a.routes())))),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 		// POST /api/sync runs every item sync inline (30s per upstream request, several windows per item).
 		WriteTimeout: 10 * time.Minute}
