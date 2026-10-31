@@ -218,22 +218,40 @@ func (s jevSource) Suggest(ctx context.Context, samples []MerchantSample, catego
 		criteria[c.Name] = c.Description
 	}
 	out := make(map[string]Suggestion)
-	var ask []MerchantSample
-	for _, m := range samples {
+	keys := make([]string, len(samples))
+	for i, m := range samples {
+		keys[i] = m.Key
+	}
+	// One query and one insert per batch: answers for a long history are thousands of rows, and a round trip each
+	// (an autocommit waiting on the replicas) took most of a minute.
+	rows, err := s.db.QueryContext(ctx, `SELECT merchant_key,category,confidence,probabilities FROM jev_suggestions WHERE merchant_key=ANY($1)`, keys)
+	if err != nil {
+		return nil, err
+	}
+	asked := map[string]bool{}
+	for rows.Next() {
+		var key string
 		var g Suggestion
 		var probs []byte
-		err := s.db.QueryRowContext(ctx, `SELECT category,confidence,probabilities FROM jev_suggestions WHERE merchant_key=$1`, m.Key).Scan(&g.Category, &g.Confidence, &probs)
-		if errors.Is(err, sql.ErrNoRows) {
-			ask = append(ask, m)
-			continue
-		}
-		if err != nil {
+		if err := rows.Scan(&key, &g.Category, &g.Confidence, &probs); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		asked[key] = true
 		if g.Category != "" {
 			_ = json.Unmarshal(probs, &g.Probabilities) // NULL or bad JSON: just no probabilities
 			g.Source, g.Reason = "jev", s.reason(g.Confidence)
-			out[m.Key] = g
+			out[key] = g
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var ask []MerchantSample
+	for _, m := range samples {
+		if !asked[m.Key] {
+			ask = append(ask, m)
 		}
 	}
 	samples = ask
@@ -275,20 +293,26 @@ func (s jevSource) Suggest(ctx context.Context, samples []MerchantSample, catego
 			log.Printf("suggestion source jev: %v (keeping %d earlier answers)", err, len(out))
 			return out, nil
 		}
+		var ks, cats []string
+		var confs []float64
+		var probs []*string
 		for id, key := range keys {
 			a, ok := got[id]
-			var probs []byte
+			var p *string
 			if ok {
 				out[key] = Suggestion{Category: a.Choice, Confidence: a.Confidence, Probabilities: a.Probabilities, Source: "jev", Reason: s.reason(a.Confidence)}
 				if len(a.Probabilities) > 0 {
-					probs, _ = json.Marshal(a.Probabilities)
+					b, _ := json.Marshal(a.Probabilities)
+					p = new(string(b))
 				}
 			}
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO jev_suggestions(merchant_key,category,confidence,probabilities) VALUES($1,$2,$3,$4)
-				ON CONFLICT(merchant_key) DO UPDATE SET category=excluded.category,confidence=excluded.confidence,probabilities=excluded.probabilities,asked_at=now()`,
-				key, a.Choice, a.Confidence, probs); err != nil {
-				return nil, err
-			}
+			ks, cats, confs, probs = append(ks, key), append(cats, a.Choice), append(confs, a.Confidence), append(probs, p)
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO jev_suggestions(merchant_key,category,confidence,probabilities)
+			SELECT * FROM unnest($1::text[],$2::text[],$3::float8[],$4::jsonb[])
+			ON CONFLICT(merchant_key) DO UPDATE SET category=excluded.category,confidence=excluded.confidence,probabilities=excluded.probabilities,asked_at=now()`,
+			ks, cats, confs, probs); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
