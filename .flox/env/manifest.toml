@@ -7,6 +7,7 @@ just.pkg-path = "just"
 just.outputs = "all"
 watchexec.pkg-path = "watchexec"
 postgresql.pkg-path = "postgresql_17"
+poppler-utils.pkg-path = "poppler-utils"
 
 [options]
 systems = ["aarch64-darwin", "aarch64-linux", "x86_64-linux"]

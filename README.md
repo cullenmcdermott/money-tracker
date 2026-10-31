@@ -190,6 +190,20 @@ money-tracker import-monarch --transactions Transactions.csv --balances Balances
 - Monarch categories are mapped onto this app's.
 - Re-running updates rows instead of duplicating them, and never overwrites a category you chose since.
 
+## Importing statements
+
+For history older than SimpleFIN's and Monarch's, download your banks' PDF statements and:
+
+```sh
+money-tracker import-statements [--account <account id or last digits>] [--dry-run] statements/*.pdf
+```
+
+- It needs poppler's `pdftotext` (in the flox environment; set `PDFTOTEXT` to point elsewhere). Chase and USAA card statements, USAA checking and savings statements (both layouts) and Vanguard brokerage statements are read.
+- A bank or card statement is imported only when its transactions add up from its opening to its closing balance; one that doesn't is listed and skipped. Investment statements can't be checked that way, so their activity and closing value are taken as read.
+- Each statement's closing balance is added to the account's balance history on dates that have none.
+- Accounts are matched by the statement's last 4 digits. A card whose number changed over the years needs `--account`, with the account's current last digits or its id.
+- Transactions are only imported from before each account's other history (SimpleFIN or Monarch), skipping any that history already has. Re-running it adds nothing new.
+
 ## Configuration
 
 | Variable | Default | |

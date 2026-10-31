@@ -13,6 +13,9 @@
       "nodejs": {
         "pkg-path": "nodejs"
       },
+      "poppler-utils": {
+        "pkg-path": "poppler-utils"
+      },
       "postgresql": {
         "pkg-path": "postgresql_17"
       },
@@ -233,6 +236,7 @@
       "version": "24.20.0",
       "outputs_to_install": [
         "out",
+        "out",
         "out"
       ],
       "outputs": {
@@ -262,6 +266,7 @@
       "unfree": false,
       "version": "24.20.0",
       "outputs_to_install": [
+        "out",
         "out",
         "out"
       ],
@@ -293,10 +298,103 @@
       "version": "24.20.0",
       "outputs_to_install": [
         "out",
+        "out",
+        "out",
+        "out",
         "out"
       ],
       "outputs": {
         "out": "/nix/store/v6wsd9nyglmwh32yn7w8z11dq9cksg4m-nodejs-24.20.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "poppler-utils",
+      "broken": false,
+      "derivation": "/nix/store/78y4m14h6dhv79990rmlnjngv3dca1q3-poppler-utils-26.06.0.drv",
+      "description": "PDF rendering library",
+      "install_id": "poppler-utils",
+      "license": "GPL-2.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "poppler-utils-26.06.0",
+      "pname": "poppler-utils",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T04:59:07.125821Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "26.06.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "dev": "/nix/store/f10jvh5w1nxsj4vnx70wxq694w639mys-poppler-utils-26.06.0-dev",
+        "out": "/nix/store/li9nhj8ybvjgkz9hjrqvqp57b69j9nhd-poppler-utils-26.06.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "poppler-utils",
+      "broken": false,
+      "derivation": "/nix/store/585n85z2nzf4qravpzq03v73032ak5sq-poppler-utils-26.06.0.drv",
+      "description": "PDF rendering library",
+      "install_id": "poppler-utils",
+      "license": "GPL-2.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "poppler-utils-26.06.0",
+      "pname": "poppler-utils",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T05:30:58.383924Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "26.06.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "dev": "/nix/store/zv151ghvngvmxwcd19m0l225i7c4kbpi-poppler-utils-26.06.0-dev",
+        "out": "/nix/store/f9m024q0h0a0zsgyc6azrw5na5nn6n27-poppler-utils-26.06.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "poppler-utils",
+      "broken": false,
+      "derivation": "/nix/store/gvf3qz4mmnk43gcb0pbvqswg80l7v4nh-poppler-utils-26.06.0.drv",
+      "description": "PDF rendering library",
+      "install_id": "poppler-utils",
+      "license": "GPL-2.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "name": "poppler-utils-26.06.0",
+      "pname": "poppler-utils",
+      "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
+      "rev_count": 1080855,
+      "rev_date": "2026-09-28T06:58:16Z",
+      "scrape_date": "2026-09-29T06:07:02.495600Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "26.06.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "dev": "/nix/store/rqyw71wxw7wzbjlsmgmb8b0lk0yj47y5-poppler-utils-26.06.0-dev",
+        "out": "/nix/store/80q9cnqf0wvs86qn57d2dlgh4y9jax97-poppler-utils-26.06.0"
       },
       "system": "x86_64-linux",
       "group": "toplevel",
@@ -400,6 +498,9 @@
       "version": "17.11",
       "outputs_to_install": [
         "man",
+        "out",
+        "out",
+        "out",
         "out"
       ],
       "outputs": {

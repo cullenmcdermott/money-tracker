@@ -510,6 +510,12 @@ func main() {
 		}
 		return
 	}
+	if ran, err := importStatementsCLI(context.Background(), db, os.Args[1:], os.Stdout); ran {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	a := &app{db: db, simplefin: sf, jev: newJevFromEnv()}
 	if a.jev != nil {
 		a.jev.usage = db
