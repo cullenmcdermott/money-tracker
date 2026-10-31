@@ -793,7 +793,8 @@ function investments() {
   return `${head}
   <p class="sub">${esc(dMed(INV.data.from))} to ${esc(dMed(INV.data.to))}${INV.period.includes('..') ? ', zoomed in. <button class="linkbtn" data-act="invunzoom">Reset zoom</button>' : ''}. Added is money you put in (transfers, payroll, conversions, vests once sold); market change is the rest of the growth.</p>
   <div class="invf"><div class="seg" role="group" aria-label="Account type">${['all', 'Taxable', 'Retirement', 'Equity comp'].map(k => `<button data-act="invk" data-v="${k}" aria-pressed="${INV.kind === k}">${k === 'all' ? 'All' : k}</button>`).join('')}</div></div>
-  <section class="panel"><div class="fstats">
+  <section class="panel lv" id="live">${liveHTML()}</section>
+  <section class="panel" style="margin-top:16px"><div class="fstats">
     <div><span class="lab"><i style="background:var(--income)"></i>Balance</span><b>${usd0(T.end)}</b></div>
     <div><span class="lab"><i style="background:var(--kept)"></i>You added</span><b>${sgn(T.added)}</b></div>
     <div><span class="lab"><i style="background:var(--cat-x2)"></i>Dividends</span><b>${sgn(T.dividends)}</b></div>
@@ -886,6 +887,152 @@ function invChart(list) {
   const every = Math.ceil(n / 8)
   months.forEach((m, k) => { if (k % every === 0 || k === n - 1) g += `<text x="${f1(x(k))}" y="${H - 6}" text-anchor="middle">${mShort(m.month)}</text>` })
   return `<svg class="invchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Investment balances over time">${g}</svg>`
+}
+
+/* ---------- Live prices (Investments page): today's holdings priced through the day or over a range ---------- */
+// LV.data: last GET /prices?range=&compare= (times + each holding's values in cents). Grouping, $ or %, the
+// comparison, hidden series and the zoom are all done here, so changing them needs no new request.
+const LV = { range: '1d', by: 'total', pct: false, cmp: '', data: null, key: '', err: '', hidden: new Set(), zoom: null, timer: 0 }
+const LV_RANGES = [['1d', '1D'], ['5d', '5D'], ['1mo', '1M'], ['3mo', '3M'], ['ytd', 'YTD'], ['1y', '1Y'], ['5y', '5Y'], ['max', 'Max']]
+const lvKey = () => LV.range + '|' + LV.cmp
+function loadLive(force) {
+  const k = lvKey()
+  if (inflight.has('lv') || (!force && LV.key === k && (LV.data || LV.err))) return
+  inflight.add('lv')
+  api(`/prices?range=${LV.range}${LV.cmp ? '&compare=' + encodeURIComponent(LV.cmp) : ''}`)
+    .then(v => { if (k === lvKey()) { LV.data = v; LV.err = '' } }, e => { LV.err = e.message })
+    .finally(() => { LV.key = k; inflight.delete('lv'); paintLive() })
+}
+// Refresh a 1D chart every minute while the page is open and visible (the server caches Yahoo for a minute too).
+function liveTimer() {
+  clearInterval(LV.timer)
+  if (LV.range === '1d') LV.timer = setInterval(() => { if (state.view === 'investments' && !document.hidden && !LV.zoom) loadLive(true) }, 60000)
+}
+// Series for the chosen grouping. Holdings beyond the 6 largest fold into Other, so colors never repeat.
+function lvSeries() {
+  const H = LV.data.holdings, n = LV.data.times.length, groups = new Map()
+  const add = (id, label, h, share = 1) => {
+    const g = groups.get(id) || groups.set(id, { id, label, base: 0, values: new Array(n).fill(0) }).get(id)
+    g.base += h.base * share; h.values.forEach((v, i) => { g.values[i] += v * share })
+  }
+  if (LV.by === 'class') for (const h of H) { if (!h.class) add('unclassified', 'Unclassified', h); else h.class.split.forEach((bp, i) => { if (bp) add(CLASSES[i][0], CLASSES[i][1], h, bp / 10000) }) }
+  else for (const h of H) LV.by === 'total' ? add('total', 'Holdings', h) : LV.by === 'account' ? add(h.account_id, h.account, h) : add(h.symbol || h.description, h.symbol || h.description, h)
+  let list = [...groups.values()]
+  if (LV.by === 'class') list = [...CLASSES.map(c => c[0]), 'unclassified'].map(k => groups.get(k)).filter(Boolean).map(g => ({ ...g, color: (CLASSES.find(c => c[0] === g.id) || [, , 'var(--cat-other)'])[2] }))
+  else {
+    list.sort((x, y) => y.base - x.base)
+    if (list.length > 7) {
+      const rest = list.splice(6), o = { id: 'other', label: `Other (${rest.length})`, base: 0, values: new Array(n).fill(0) }
+      rest.forEach(g => { o.base += g.base; g.values.forEach((v, i) => { o.values[i] += v }) }); list.push(o)
+    }
+    // Colors follow the series' name, not its size, so a different range or zoom never repaints one.
+    const order = [...list].map(g => g.id).sort()
+    list.forEach(g => { g.color = g.id === 'other' ? 'var(--cat-other)' : g.id === 'total' ? 'var(--income)' : INV_COLORS[order.indexOf(g.id) % INV_COLORS.length] })
+  }
+  return list
+}
+const lvTime = (t, long) => {
+  const d = LV.data, o = d.daily ? { timeZone: 'UTC', month: 'short', day: 'numeric', ...(long || d.interval !== '1d' ? { year: 'numeric' } : {}) }
+    : { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', ...(LV.range === '1d' && !long ? {} : { month: 'short', day: 'numeric' }) }
+  return new Date(t * 1000).toLocaleString('en-US', o)
+}
+const sPct = x => `${x >= 0 ? '+' : '−'}${(Math.abs(x) * 100).toFixed(2)}%`
+function liveHTML() {
+  const head = `<div class="phead"><h2>Live</h2><div class="lvctl">
+    <div class="seg" role="group" aria-label="Range">${LV_RANGES.map(([k, l]) => `<button data-act="lvr" data-v="${k}" aria-pressed="${LV.range === k}">${l}</button>`).join('')}</div>
+    <div class="seg" role="group" aria-label="Group by">${[['total', 'Total'], ['account', 'Account'], ['holding', 'Holding'], ['class', 'Class']].map(([k, l]) => `<button data-act="lvb" data-v="${k}" aria-pressed="${LV.by === k}">${l}</button>`).join('')}</div>
+    <div class="seg" role="group" aria-label="Units">${[[false, '$'], [true, '%']].map(([k, l]) => `<button data-act="lvp" data-v="${k}" aria-pressed="${LV.pct === k}">${l}</button>`).join('')}</div>
+    <form class="lvcmp" data-lvcmp><label class="sr" for="lvcmpin">Compare with</label><input id="lvcmpin" name="t" placeholder="Compare: SPY" value="${esc(LV.cmp)}" maxlength="12" autocomplete="off" spellcheck="false">${LV.cmp ? `<button type="button" class="linkbtn" data-act="lvcx" aria-label="Stop comparing">${icon('x', 14)}</button>` : ''}</form></div></div>`
+  if (LV.err && !LV.data) return `${head}<div class="empty"><p><strong>Could not load prices</strong></p><p>${esc(LV.err)}</p><p><button class="btn ghost" data-act="lvretry">Retry</button></p></div>`
+  if (!LV.data || LV.key !== lvKey()) { loadLive(); if (!LV.data) return `${head}<div class="load" role="status">Loading prices…</div>` }
+  const d = LV.data, all = lvSeries(), shown = all.filter(s => !LV.hidden.has(s.id))
+  if (!d.times.length) return `${head}<div class="empty"><p>No prices for this range.</p></div>`
+  const [i0, i1] = LV.zoom || [0, d.times.length - 1]
+  const tot = d.times.map((_, i) => shown.reduce((s, g) => s + g.values[i], 0)).slice(i0, i1 + 1)
+  const base0 = LV.zoom ? tot[0] : shown.reduce((s, g) => s + g.base, 0), last = tot.at(-1), chg = last - base0
+  // Largest fall from a high, and (for daily or longer bars) the best and worst single bar.
+  let peak = -Infinity, dd = 0; for (const v of [base0, ...tot]) { peak = Math.max(peak, v); dd = Math.min(dd, peak ? v / peak - 1 : 0) }
+  let best = null, worst = null
+  if (d.daily) tot.forEach((v, k) => { const p = k ? tot[k - 1] : base0; if (!p) return; const r = v / p - 1, t = d.times[i0 + k]; if (!best || r > best.r) best = { r, t }; if (!worst || r < worst.r) worst = { r, t } })
+  const bar = { '1d': 'day', '1wk': 'week', '1mo': 'month' }[d.interval]
+  const cmp = d.compare && d.compare.values.slice(i0, i1 + 1), cmpBase = cmp && (LV.zoom ? cmp[0] : d.compare.base)
+  const stats = `<div class="fstats lvstats">
+    <div><span class="lab">Value</span><b>${usd0(last)}</b></div>
+    <div><span class="lab">${LV.zoom ? 'Change in zoom' : LV.range === '1d' ? 'Today' : 'Change'}</span><b class="${chg >= 0 ? 'up' : 'down'}">${(chg >= 0 ? '+' : '−') + usd0(Math.abs(chg))} · ${base0 ? sPct(chg / base0) : '—'}</b></div>
+    ${cmp ? `<div><span class="lab">${esc(d.compare.symbol)}</span><b class="${cmp.at(-1) >= cmpBase ? 'up' : 'down'}">${sPct(cmp.at(-1) / cmpBase - 1)}</b></div>` : ''}
+    <div><span class="lab">High · low</span><b>${usd0(Math.max(...tot))} · ${usd0(Math.min(...tot))}</b></div>
+    <div><span class="lab">Largest drop</span><b class="${dd < 0 ? 'down' : ''}">${dd < 0 ? sPct(dd) : 'None'}</b></div>
+    ${best ? `<div><span class="lab">Best · worst ${bar}</span><b><span class="up">${sPct(best.r)}</span> ${esc(lvTime(best.t))} · <span class="down">${sPct(worst.r)}</span> ${esc(lvTime(worst.t))}</b></div>` : ''}</div>`
+  const onChart = LV.pct && cmp
+  const leg = all.length > 1 || onChart ? `<div class="invleg">${all.length > 1 ? all.map(s => `<button data-act="lvh" data-v="${esc(s.id)}" aria-pressed="${!LV.hidden.has(s.id)}"><i style="background:${s.color}"></i>${esc(clip(s.label, 34))}</button>`).join('') : ''}${onChart ? `<span class="lvbench"><i class="dash"></i>${esc(d.compare.symbol)}</span>` : ''}</div>` : ''
+  const twins = [...new Set(d.holdings.filter(h => h.source.startsWith('twin:')).map(h => `${h.symbol || clip(h.description, 20)} → ${h.source.slice(5)}`))]
+  const notes = [
+    LV.zoom ? `Zoomed to ${esc(lvTime(d.times[i0], true))} – ${esc(lvTime(d.times[i1], true))}. <button class="linkbtn" data-act="lvunzoom">Reset zoom</button>` : 'Drag across the chart to zoom in.',
+    twins.length ? `Funds that price once a day follow their ETF during the day: ${esc(twins.join(', '))}.` : '',
+    d.unavailable.length ? `No price for ${esc(d.unavailable.join(', '))}, so ${d.unavailable.length === 1 ? 'it stays' : 'they stay'} at the last synced value.` : '',
+    !d.daily || LV.range === '1d' ? '' : 'Today\'s shares at each date\'s prices: how today\'s holdings did, not past balances.',
+    d.compare_error ? `Could not load ${esc(LV.cmp)}.` : LV.cmp && !LV.pct ? `Switch to % to see ${esc(LV.cmp)} on the chart.` : '',
+    `Prices from Yahoo Finance, delayed up to 15 minutes${LV.range === '1d' ? ', refreshed every minute' : ''}.`]
+  return `${head}${stats}${leg}<div class="lvwrap">${lvChart(shown, i0, i1, base0, cmp, cmpBase)}<div class="lvtip" hidden></div></div><p class="cap">${notes.filter(Boolean).join(' ')}</p>`
+}
+// Like axis(), with enough digits that ticks a few thousand dollars apart on a $1M+ chart don't all read the same.
+const lvAxis = (v, step) => privacy.on ? '' : step >= 1e5 || Math.abs(v) < 1e4 ? axis(v) : '$' + (v / 1000).toLocaleString('en-US', { maximumFractionDigits: step >= 1000 ? 0 : 1 }) + 'k'
+const LVW = 760, LVH = 260, LVL = 62, LVT = 10, LVB = 26
+function lvChart(shown, i0, i1, base0, cmp, cmpBase) {
+  if (!shown.length) return '<div class="empty">Every series is hidden. Turn one back on in the legend.</div>'
+  const d = LV.data, n = i1 - i0 + 1, x = k => LVL + (LVW - LVL - 12) * (n === 1 ? 0.5 : k / (n - 1))
+  const win = s => s.values.slice(i0, i1 + 1), stack = !LV.pct && shown.length > 1
+  // Each series as $ or as % change from its own value before the range (or the zoom's first point).
+  const lines = shown.map(s => { const w = win(s), b = LV.zoom ? w[0] : s.base; return { ...s, w, y: LV.pct ? w.map(v => b ? (v / b - 1) * 100 : 0) : w.map(v => v / 100) } })
+  const bench = LV.pct && cmp ? cmp.map(v => (v / cmpBase - 1) * 100) : null
+  let lo, hi
+  if (stack) { lo = 0; hi = Math.max(...lines[0].y.map((_, k) => lines.reduce((s, l) => s + Math.max(0, l.y[k]), 0))) * 1.04 }
+  else {
+    const vals = [...lines.flatMap(l => l.y), ...(bench || []), ...(LV.pct ? [0] : [base0 / 100])]
+    lo = Math.min(...vals); hi = Math.max(...vals); const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.01 || 1; lo -= pad; hi += pad
+  }
+  const step = LV.pct ? [0.05, 0.1, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 500].find(s => (hi - lo) / s <= 5) || 1000 : niceStep(hi - lo, 4)
+  const y = v => LVT + (LVH - LVT - LVB) * (1 - (v - lo) / (hi - lo)), path = a => a.map((v, k) => `${k ? 'L' : 'M'}${f1(x(k))},${f1(y(v))}`).join('')
+  let g = ''
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<line class="gridline" x1="${LVL}" x2="${LVW}" y1="${f1(y(v))}" y2="${f1(y(v))}"/><text x="${LVL - 8}" y="${f1(y(v) + 4)}" text-anchor="end">${LV.pct ? (v > 0 ? '+' : '') + +v.toFixed(2) + '%' : lvAxis(v, step)}</text>`
+  if (stack) {
+    let base = lines[0].y.map(() => 0)
+    for (const l of lines) { const up = l.y.map((v, k) => base[k] + Math.max(0, v)); g += `<path d="${path(up)}${base.map((_, k) => `L${f1(x(n - 1 - k))},${f1(y(base[n - 1 - k]))}`).join('')}Z" style="fill:${l.color}" opacity=".85"/>`; base = up }
+  } else {
+    const ref = LV.pct ? 0 : base0 / 100
+    g += `<line x1="${LVL}" x2="${LVW}" y1="${f1(y(ref))}" y2="${f1(y(ref))}" style="stroke:var(--muted)" stroke-dasharray="3 4"/>`
+    if (bench) g += `<path d="${path(bench)}" fill="none" style="stroke:var(--ink2)" stroke-width="1.5" stroke-dasharray="6 4"/>`
+    for (const l of lines) g += `<path d="${path(l.y)}" fill="none" style="stroke:${l.color}" stroke-width="2" stroke-linejoin="round"/>`
+  }
+  // Time labels, thinned so they never collide.
+  let lastX = -99
+  const gap = lvTime(d.times[i1]).length * 7 + 24, last = x(n - 1)
+  for (let k = 0; k < n; k++) { const t = d.times[i0 + k], px = x(k); if ((k && px - lastX < gap) || (k < n - 1 && last - px < gap)) continue; lastX = px; g += `<text x="${f1(px)}" y="${LVH - 6}" text-anchor="${!k ? 'start' : k === n - 1 ? 'end' : 'middle'}">${esc(lvTime(t))}</text>` }
+  g += `<g class="lvx" style="display:none"><line y1="${LVT}" y2="${LVH - LVB}" style="stroke:var(--muted)" stroke-dasharray="3 3"/></g>`
+  LV.draw = { lines, bench, x, y, n, i0, stack }
+  const what = LV.pct ? 'Percent change' : 'Value', from = lvTime(d.times[i0], true), to = lvTime(d.times[i1], true)
+  return `<svg class="lvchart" viewBox="0 0 ${LVW} ${LVH}" role="img" aria-label="${esc(`${what} of ${shown.map(s => s.label).join(', ')} from ${from} to ${to}`)}">${g}</svg>`
+}
+function paintLive() {
+  const box = $('#live'); if (!box || state.view !== 'investments') return
+  box.innerHTML = liveHTML(); bindLive()
+}
+function bindLive() {
+  const svg = $('.lvchart'), tip = $('.lvtip'), D2 = LV.draw; if (!svg || !D2) return
+  const idx = v => Math.max(0, Math.min(D2.n - 1, Math.round((v - LVL) / (LVW - LVL - 12) * (D2.n - 1))))
+  brush(svg, idx, (i, j) => { if (j > i) { LV.zoom = [D2.i0 + i, D2.i0 + j]; paintLive() } })
+  const cx = svg.querySelector('.lvx'), ln = cx.querySelector('line')
+  svg.onpointermove = e => {
+    const r = svg.getBoundingClientRect(), k = idx((e.clientX - r.left) * LVW / r.width), px = D2.x(k)
+    cx.style.display = ''; ln.setAttribute('x1', px); ln.setAttribute('x2', px)
+    const val = l => LV.pct ? sPct(l.y[k] / 100) : usd0(l.w[k])
+    const rows = D2.lines.map(l => `<div><i style="background:${l.color}"></i>${esc(clip(l.label, 26))}<b>${val(l)}</b></div>`)
+    if (D2.stack) rows.push(`<div class="lvtot">Total<b>${usd0(D2.lines.reduce((s, l) => s + l.w[k], 0))}</b></div>`)
+    if (D2.bench) rows.push(`<div><i class="dash"></i>${esc(LV.data.compare.symbol)}<b>${sPct(D2.bench[k] / 100)}</b></div>`)
+    tip.innerHTML = `<p>${esc(lvTime(LV.data.times[D2.i0 + k], true))}</p>${rows.join('')}`; tip.hidden = false
+    const left = px / LVW * r.width; tip.style.left = (left > r.width / 2 ? left - tip.offsetWidth - 12 : left + 12) + 'px'
+  }
+  svg.onpointerleave = () => { cx.style.display = 'none'; tip.hidden = true }
 }
 
 /* ---------- Invest a deposit (#invest): split an amount across an account's funds toward its target balance ---------- */
@@ -1008,6 +1155,10 @@ document.addEventListener('click', e => {
     send('PUT', '/invest/' + encodeURIComponent(IV.acct), { ...IV.data.doc, mode: 'percent', percent })
       .then(() => { IV.edit = IV.preview = null; IV.data = IV.form = null; toast('Targets saved.'); render() }, er => { IV.editErr = er.message; ivPaint() })
   } else if (a === 'ivreset') { IV.form = clone(IV.data.doc); IV.formErr = ''; render() }
+})
+document.addEventListener('submit', e => {
+  if (e.target.dataset.lvcmp === undefined) return
+  e.preventDefault(); LV.cmp = e.target.t.value.trim().toUpperCase(); if (LV.cmp) LV.pct = true; paintLive()
 })
 document.addEventListener('submit', e => {
   if (e.target.dataset.ivform === undefined) return
@@ -1703,6 +1854,7 @@ function render(top) {
       INV.period = `${months[i].month}..${months[j].month}`; INV.data = null; render()
     })
   }
+  if (state.loaded && v === 'investments') { bindLive(); liveTimer() }
   if (state.loaded && v === 'transactions') { paintTx(); fetchTx('reset'); loadAlerts() }
   if (state.loaded && v === 'settings' && D.rules === null && !state.rulesErr) loadRules()
   if (state.loaded && v === 'settings' && bk.data === null && !bk.err && !bk.phase) loadBackups()
@@ -1740,6 +1892,13 @@ document.addEventListener('click', e => {
   else if (a === 'invp') { INV.period = d.v; INV.zoomFrom = null; INV.data = null; render() }
   else if (a === 'invunzoom') { INV.period = INV.zoomFrom || 'ytd'; INV.zoomFrom = null; INV.data = null; render() }
   else if (a === 'invk') { INV.kind = d.v; render() }
+  else if (a === 'lvr') { LV.range = d.v; LV.zoom = null; liveTimer(); paintLive() }
+  else if (a === 'lvb') { LV.by = d.v; LV.hidden.clear(); paintLive() }
+  else if (a === 'lvp') { LV.pct = d.v === 'true'; paintLive() }
+  else if (a === 'lvh') { LV.hidden.has(d.v) ? LV.hidden.delete(d.v) : LV.hidden.add(d.v); paintLive() }
+  else if (a === 'lvunzoom') { LV.zoom = null; paintLive() }
+  else if (a === 'lvcx') { LV.cmp = ''; paintLive() }
+  else if (a === 'lvretry') { LV.err = ''; LV.key = ''; paintLive() }
   else if (a === 'invc') { INV.chart = d.v; render() }
   else if (a === 'invh') { INV.hidden.has(d.v) ? INV.hidden.delete(d.v) : INV.hidden.add(d.v); render() }
   else if (a === 'invs') { if (INV.sort === d.v) INV.dir *= -1; else { INV.sort = d.v; INV.dir = d.v === 'name' ? 1 : -1 } render() }

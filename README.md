@@ -155,6 +155,12 @@ Allocation splits holdings into US stock, international stock, bonds, cash and o
 
 SEC lookups are off unless `SEC_USER_AGENT` is set to your name and email, which the SEC requires of every client. Then, after each sync, the app downloads the SEC's public ticker lists (once a day) and the filings of held funds with no recent split. Only fund tickers and series ids are sent, at most 5 requests a second. Lookups tell the SEC which funds someone holds, which is why they are opt-in.
 
+## Live prices
+
+The Investments page's **Live** chart prices today's holdings minute by minute (1D), every 5 minutes (5D), hourly (1M) or daily and longer, from Yahoo Finance's public chart endpoint (no key; unofficial, delayed up to 15 minutes). Group it by account, holding or asset class, switch between dollars and percent, compare with any ticker (in percent), and drag across it to zoom; it shows the change, high and low, largest drop and, for daily bars, the best and worst day.
+
+Mutual funds price once a day, so during the day an index fund follows its ETF share class (VFIAX follows VOO, VTIAX follows VXUS, …), scaled from its latest price. A fund with no public ticker follows VOO if its name says it tracks the S&P 500; anything else, and money market funds, stays at its last synced value, and the chart says which. Longer ranges use today's share counts throughout: they show how today's portfolio did, not past balances.
+
 ## Invest a deposit
 
 **Invest a deposit** on the Investments page splits an amount you're adding to an account across its funds, moving them toward a target balance: the funds furthest below their target are filled first, and nothing is sold. Money market funds are left out as cash. The targets come from one of:

@@ -455,6 +455,7 @@ func (a *app) routes() http.Handler {
 	a.categoryRoutes(mux)
 	a.accountRoutes(mux)
 	a.investmentRoutes(mux)
+	a.priceRoutes(mux)
 	a.investRoutes(mux)
 	a.merchantRoutes(mux)
 	a.backupRoutes(mux)
